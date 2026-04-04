@@ -1,6 +1,6 @@
 # astrbot-plugin-helloworld
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+AstrBot 技能汇总 / A summary plugin for a few of AstrBot plugin feature
 
 > [!NOTE]
 > This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
