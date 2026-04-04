@@ -915,22 +915,64 @@ class CollectSkillPlugin(Star):
     def _admin_ids(self) -> set[str]:
         ids = set()
         cfg_ids = self._config_get("admin_ids", [])
-        if isinstance(cfg_ids, list):
-            for item in cfg_ids:
-                s = str(item).strip()
-                if s:
-                    ids.add(s)
+        ids.update(self._extract_ids_from_value(cfg_ids))
 
-        # 兼容全局管理员配置
+        # 兼容 AstrBot 全局管理员配置，避免重复维护两套管理员列表
         try:
             global_cfg = self.context.get_config()
-            for item in global_cfg.get("admins_id", []):
-                s = str(item).strip()
-                if s:
-                    ids.add(s)
+            ids.update(self._extract_admin_ids_from_global_config(global_cfg))
         except Exception:
             pass
 
+        return ids
+
+    def _extract_admin_ids_from_global_config(self, global_cfg: Any) -> set[str]:
+        ids: set[str] = set()
+        if not isinstance(global_cfg, dict):
+            return ids
+
+        for key in ("admins_id", "admin_ids", "admins", "superusers", "owners", "admin"):
+            if key in global_cfg:
+                ids.update(self._extract_ids_from_value(global_cfg.get(key)))
+
+        # 一些配置会把管理员放在嵌套节点里
+        for nested_key in ("platform", "permissions", "security", "bot"):
+            nested = global_cfg.get(nested_key)
+            if isinstance(nested, dict):
+                for key in ("admins_id", "admin_ids", "admins", "superusers", "owners", "admin"):
+                    if key in nested:
+                        ids.update(self._extract_ids_from_value(nested.get(key)))
+
+        return ids
+
+    def _extract_ids_from_value(self, value: Any) -> set[str]:
+        ids: set[str] = set()
+        if value is None:
+            return ids
+
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                s = str(item).strip()
+                if s:
+                    ids.add(s)
+            return ids
+
+        if isinstance(value, dict):
+            for k in ("id", "uid", "user_id", "value", "name", "username"):
+                v = value.get(k)
+                if v is not None:
+                    s = str(v).strip()
+                    if s:
+                        ids.add(s)
+            return ids
+
+        text = str(value).strip()
+        if not text:
+            return ids
+        for token in re.split(r"[,\s;|]+", text):
+            s = token.strip()
+            if s:
+                ids.add(s)
         return ids
 
     def _normalize_admin_text(self, text: str) -> str:
@@ -962,6 +1004,16 @@ class CollectSkillPlugin(Star):
         return candidates
 
     def _is_admin(self, event: AstrMessageEvent) -> bool:
+        # 平台如果已经标记管理员身份，直接放行
+        for key in ("is_admin", "is_superuser", "is_owner"):
+            if bool(getattr(event, key, False)):
+                return True
+        sender = getattr(event, "sender", None)
+        if sender is not None:
+            for key in ("is_admin", "is_superuser", "is_owner"):
+                if bool(getattr(sender, key, False)):
+                    return True
+
         admin_keywords = [self._normalize_admin_text(x) for x in self._admin_ids() if str(x).strip()]
         if not admin_keywords:
             return False
@@ -1250,7 +1302,7 @@ class CollectSkillPlugin(Star):
             "自然语言识别已交给主助手，请由助手调用工具：\n"
             "- create_cron_task（周期）\n"
             "- create_once_reminder（单次）\n"
-            "管理员控制：可在插件 WebUI 配置中设置 admin_ids 与 admin_only_cron。"
+            "管理员控制：默认读取 AstrBot 全局管理员；也可在插件 WebUI 的 admin_ids 追加关键词管理员。"
         )
 
     # ---------- store ----------
