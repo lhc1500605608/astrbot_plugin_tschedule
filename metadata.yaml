@@ -3,4 +3,4 @@ display_name: "Astrbot计划任务提醒"
 desc: AstrBot 计划任务提醒插件（v2.1.1：插件重命名，聚焦计划任务能力）。
 version: v2.1.1
 author: Tango
-repo: https://github.com/lhc1500605608/astrbot_plugin_collect_skill
+repo: https://github.com/lhc1500605608/astrbot_plugin_tschedule
