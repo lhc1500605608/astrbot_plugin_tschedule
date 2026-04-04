@@ -1,6 +1,6 @@
 name: astrbot_plugin_collect_skill
 display_name: "Astrbot 技能汇总"
-desc: AstrBot 复合技能插件（v2.0.3：cron + 单次提醒 + future task 同步 + LLM tools）。
-version: v2.0.3
+desc: AstrBot 复合技能插件（v2.0.4：管理员配置 + cron 重试 + future task 同步 + LLM tools）。
+version: v2.0.4
 author: Tango
 repo: https://github.com/Tango/astrbot_plugin_collect_skill

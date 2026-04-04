@@ -1,0 +1,20 @@
+{
+  "admin_only_cron": {
+    "type": "bool",
+    "description": "是否仅允许管理员创建/修改/删除/启停 cron 任务",
+    "default": true
+  },
+  "admin_ids": {
+    "type": "list",
+    "description": "插件管理员用户 ID 列表（可多个）",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
+  "default_retry_times": {
+    "type": "int",
+    "description": "新建任务默认重试次数（可在命令中按任务覆盖）",
+    "default": 0
+  }
+}

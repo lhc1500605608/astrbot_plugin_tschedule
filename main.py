@@ -4,7 +4,7 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -36,16 +36,18 @@ class CronTask:
 
     timezone_name: str = "Asia/Shanghai"
     enabled: bool = True
+    retry_times: int = 0
     last_run_minute: str = ""
     last_error: str = ""
     last_run_at: str = ""
     future_job_id: str = ""
 
 
-@register("collect_skill", "Tango", "AstrBot 技能汇总（v2.0.3: cron only + llm tools）", "2.0.3")
+@register("collect_skill", "Tango", "AstrBot 技能汇总（v2.0.4: admin + retry）", "2.0.4")
 class CollectSkillPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
+        self.plugin_config = config
         self.tasks: Dict[int, CronTask] = {}
         self.next_task_id: int = 1
 
@@ -75,6 +77,7 @@ class CollectSkillPlugin(Star):
         name: str,
         cron_expression: str,
         reminder: str,
+        retry_times: int = -1,
     ) -> str:
         """创建周期 cron 任务。
 
@@ -82,8 +85,11 @@ class CollectSkillPlugin(Star):
             name(string): 任务名称。
             cron_expression(string): cron 表达式（5 段），例如 0 9 * * *。
             reminder(string): 提醒内容。
+            retry_times(int): 重试次数，缺省时使用插件配置默认值。
         """
-        payload = f"{name} | {cron_expression} | {reminder}"
+        self._ensure_admin(event)
+        retry_part = "" if int(retry_times) < 0 else str(int(retry_times))
+        payload = f"{name} | {cron_expression} | {reminder} | {retry_part}"
         return await self._create_task(payload, event, run_once=False)
 
     @filter.llm_tool(name="create_once_reminder")
@@ -93,6 +99,7 @@ class CollectSkillPlugin(Star):
         name: str,
         run_at: str,
         reminder: str,
+        retry_times: int = -1,
     ) -> str:
         """创建单次提醒任务（原 todo 能力合并到 cron）。
 
@@ -100,8 +107,11 @@ class CollectSkillPlugin(Star):
             name(string): 任务名称。
             run_at(string): 执行时间，建议格式 YYYY-MM-DD HH:MM 或 ISO datetime。
             reminder(string): 提醒内容。
+            retry_times(int): 重试次数，缺省时使用插件配置默认值。
         """
-        payload = f"{name} | {run_at} | {reminder}"
+        self._ensure_admin(event)
+        retry_part = "" if int(retry_times) < 0 else str(int(retry_times))
+        payload = f"{name} | {run_at} | {reminder} | {retry_part}"
         return await self._create_task(payload, event, run_once=True)
 
     @filter.llm_tool(name="list_cron_tasks")
@@ -116,6 +126,7 @@ class CollectSkillPlugin(Star):
         Args:
             task_id(string): 任务 ID。
         """
+        self._ensure_admin(event)
         tid = self._safe_int(task_id, "任务 ID")
         return await self._delete_task(tid)
 
@@ -159,30 +170,37 @@ class CollectSkillPlugin(Star):
         normalized = body.strip()
 
         if normalized.startswith(("添加 ", "创建 ")):
+            self._ensure_admin(event)
             payload = normalized.split(" ", 1)[1].strip()
             return await self._create_task(payload, event, run_once=False)
 
         if normalized.startswith(("单次 ", "一次 ", "待办 ", "提醒一次 ")):
+            self._ensure_admin(event)
             payload = normalized.split(" ", 1)[1].strip()
             return await self._create_task(payload, event, run_once=True)
 
         if normalized.startswith(("修改 ", "更新 ")):
+            self._ensure_admin(event)
             payload = normalized.split(" ", 1)[1].strip()
             return await self._update_task(payload)
 
         if normalized.startswith(("修改单次 ", "更新单次 ")):
+            self._ensure_admin(event)
             payload = normalized.split(" ", 1)[1].strip()
             return await self._update_once_task(payload)
 
         if normalized.startswith("删除 ") or normalized.startswith("移除 "):
+            self._ensure_admin(event)
             task_id = self._safe_int(normalized.split(" ", 1)[1].strip(), "任务 ID")
             return await self._delete_task(task_id)
 
         if normalized.startswith("启用 "):
+            self._ensure_admin(event)
             task_id = self._safe_int(normalized.split(" ", 1)[1].strip(), "任务 ID")
             return await self._toggle_task(task_id, True)
 
         if normalized.startswith("禁用 "):
+            self._ensure_admin(event)
             task_id = self._safe_int(normalized.split(" ", 1)[1].strip(), "任务 ID")
             return await self._toggle_task(task_id, False)
 
@@ -191,6 +209,7 @@ class CollectSkillPlugin(Star):
             return self._cron_task_log(task_id, event.unified_msg_origin)
 
         if normalized.startswith("立即执行 "):
+            self._ensure_admin(event)
             task_id = self._safe_int(normalized.split(" ", 1)[1].strip(), "任务 ID")
             return await self._cron_run_now(task_id, event)
 
@@ -202,10 +221,12 @@ class CollectSkillPlugin(Star):
 
         # 关键词模式
         if normalized.startswith(("创建cron ", "新建cron ")):
+            self._ensure_admin(event)
             payload = normalized.split(" ", 1)[1].strip()
             return await self._create_task(payload, event, run_once=False)
 
         if normalized.startswith(("创建待办 ", "新建待办 ", "创建提醒 ")):
+            self._ensure_admin(event)
             payload = normalized.split(" ", 1)[1].strip()
             return await self._create_task(payload, event, run_once=True)
 
@@ -219,10 +240,10 @@ class CollectSkillPlugin(Star):
 
     async def _create_task(self, payload: str, event: AstrMessageEvent, run_once: bool) -> str:
         parts = self._split_payload(payload)
-        if len(parts) != 3:
+        if len(parts) not in {3, 4}:
             if run_once:
-                raise ValueError("[E_PARAM] 单次提醒格式应为：任务名 | 执行时间 | 提醒内容")
-            raise ValueError("[E_PARAM] 创建格式应为：任务名 | cron表达式 | 提醒内容")
+                raise ValueError("[E_PARAM] 单次提醒格式应为：任务名 | 执行时间 | 提醒内容 | 可选重试次数")
+            raise ValueError("[E_PARAM] 创建格式应为：任务名 | cron表达式 | 提醒内容 | 可选重试次数")
 
         name, expr_or_time, reminder = parts
         if not name:
@@ -232,12 +253,17 @@ class CollectSkillPlugin(Star):
 
         cron_expr = ""
         run_at_iso = ""
+        retry_times = self._default_retry_times()
         if run_once:
             run_at_dt = self._parse_run_at(expr_or_time)
             run_at_iso = run_at_dt.isoformat()
         else:
             cron_expr = expr_or_time
             self._validate_cron_expr(cron_expr)
+        if len(parts) == 4 and parts[3] != "":
+            retry_times = self._safe_int(parts[3], "重试次数")
+            if retry_times < 0:
+                raise ValueError("[E_PARAM] 重试次数不能为负数")
 
         task = CronTask(
             task_id=self.next_task_id,
@@ -249,6 +275,7 @@ class CollectSkillPlugin(Star):
             run_once=run_once,
             run_at=run_at_iso,
             enabled=True,
+            retry_times=retry_times,
         )
 
         self.tasks[task.task_id] = task
@@ -262,20 +289,22 @@ class CollectSkillPlugin(Star):
                 f"已创建单次提醒任务 #{task.task_id}\n"
                 f"名称：{task.name}\n"
                 f"执行时间：{task.run_at}\n"
-                f"提醒：{task.reminder}"
+                f"提醒：{task.reminder}\n"
+                f"重试次数：{task.retry_times}"
             )
 
         return (
             f"已创建 cron 任务 #{task.task_id}\n"
             f"名称：{task.name}\n"
             f"表达式：{task.cron_expr}\n"
-            f"提醒：{task.reminder}"
+            f"提醒：{task.reminder}\n"
+            f"重试次数：{task.retry_times}"
         )
 
     async def _update_task(self, payload: str) -> str:
         parts = self._split_payload(payload)
-        if len(parts) != 4:
-            raise ValueError("[E_PARAM] 修改格式应为：任务ID | 任务名 | cron表达式 | 提醒内容（不改填 -）")
+        if len(parts) not in {4, 5}:
+            raise ValueError("[E_PARAM] 修改格式应为：任务ID | 任务名 | cron表达式 | 提醒内容 | 可选重试次数（不改填 -）")
 
         task_id = self._safe_int(parts[0], "任务 ID")
         task = self.tasks.get(task_id)
@@ -299,6 +328,11 @@ class CollectSkillPlugin(Star):
             if not new_reminder:
                 raise ValueError("[E_PARAM] 提醒内容不能为空")
             task.reminder = new_reminder
+        if len(parts) == 5 and parts[4] != "-":
+            retry_times = self._safe_int(parts[4], "重试次数")
+            if retry_times < 0:
+                raise ValueError("[E_PARAM] 重试次数不能为负数")
+            task.retry_times = retry_times
 
         task.last_run_minute = ""
         await self._sync_task_to_future_list(task)
@@ -307,8 +341,8 @@ class CollectSkillPlugin(Star):
 
     async def _update_once_task(self, payload: str) -> str:
         parts = self._split_payload(payload)
-        if len(parts) != 4:
-            raise ValueError("[E_PARAM] 修改单次格式应为：任务ID | 任务名 | 执行时间 | 提醒内容（不改填 -）")
+        if len(parts) not in {4, 5}:
+            raise ValueError("[E_PARAM] 修改单次格式应为：任务ID | 任务名 | 执行时间 | 提醒内容 | 可选重试次数（不改填 -）")
 
         task_id = self._safe_int(parts[0], "任务 ID")
         task = self.tasks.get(task_id)
@@ -331,6 +365,11 @@ class CollectSkillPlugin(Star):
             if not new_reminder:
                 raise ValueError("[E_PARAM] 提醒内容不能为空")
             task.reminder = new_reminder
+        if len(parts) == 5 and parts[4] != "-":
+            retry_times = self._safe_int(parts[4], "重试次数")
+            if retry_times < 0:
+                raise ValueError("[E_PARAM] 重试次数不能为负数")
+            task.retry_times = retry_times
 
         task.last_run_minute = ""
         await self._sync_task_to_future_list(task)
@@ -369,7 +408,7 @@ class CollectSkillPlugin(Star):
             schedule = t.run_at if t.run_once else t.cron_expr
             health = "正常" if not t.last_error else f"异常:{t.last_error}"
             lines.append(
-                f"#{t.task_id} [{kind}/{status}] {t.name} | {schedule} | {t.reminder} | {health} | future:{future_status}"
+                f"#{t.task_id} [{kind}/{status}] {t.name} | {schedule} | {t.reminder} | 重试:{t.retry_times} | {health} | future:{future_status}"
             )
         return "\n".join(lines)
 
@@ -384,6 +423,7 @@ class CollectSkillPlugin(Star):
             f"类型：{'单次' if task.run_once else '周期'}\n"
             f"名称：{task.name}\n"
             f"计划：{schedule}\n"
+            f"重试次数：{task.retry_times}\n"
             f"上次执行：{task.last_run_at or '无'}\n"
             f"上次错误：{task.last_error or '无'}\n"
             f"future_job_id：{task.future_job_id or '无'}"
@@ -457,14 +497,21 @@ class CollectSkillPlugin(Star):
         else:
             text += f"(cron: {task.cron_expr})"
 
-        try:
-            await self._send_text(task.unified_msg_origin, text)
-            task.last_error = ""
-            task.last_run_at = now.strftime("%Y-%m-%d %H:%M:%S")
-            return True
-        except Exception as e:
-            task.last_error = f"{reason}失败: {str(e)[:120]}"
-            return False
+        max_attempts = 1 + max(0, int(task.retry_times))
+        last_err = ""
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self._send_text(task.unified_msg_origin, text)
+                task.last_error = ""
+                task.last_run_at = now.strftime("%Y-%m-%d %H:%M:%S")
+                return True
+            except Exception as e:
+                last_err = str(e)
+                if attempt < max_attempts:
+                    await asyncio.sleep(min(2 * attempt, 5))
+
+        task.last_error = f"{reason}失败: {last_err[:120]}"
+        return False
 
     # ---------- future task sync ----------
     def _get_cron_manager(self):
@@ -475,6 +522,7 @@ class CollectSkillPlugin(Star):
             "session": task.unified_msg_origin,
             "sender_id": task.creator_id or "unknown",
             "note": task.reminder,
+            "retry_times": task.retry_times,
             "origin": "plugin",
             "plugin": "collect_skill",
             "plugin_task_id": task.task_id,
@@ -668,7 +716,7 @@ class CollectSkillPlugin(Star):
             raise ValueError(f"[E_PARAM] {label} 不是合法整数：`{text}`") from e
 
     def _friendly_error(self, e: Exception) -> str:
-        if isinstance(e, ValueError):
+        if isinstance(e, (ValueError, PermissionError)):
             return str(e)
         return f"[E_INTERNAL] 未知错误：{str(e)}"
 
@@ -699,14 +747,63 @@ class CollectSkillPlugin(Star):
 
         return "unknown"
 
+    def _config_get(self, key: str, default: Any):
+        if self.plugin_config is None:
+            return default
+        try:
+            value = self.plugin_config.get(key, default)
+        except Exception:
+            return default
+        return default if value is None else value
+
+    def _admin_ids(self) -> set[str]:
+        ids = set()
+        cfg_ids = self._config_get("admin_ids", [])
+        if isinstance(cfg_ids, list):
+            for item in cfg_ids:
+                s = str(item).strip()
+                if s:
+                    ids.add(s)
+
+        # 兼容全局管理员配置
+        try:
+            global_cfg = self.context.get_config()
+            for item in global_cfg.get("admins_id", []):
+                s = str(item).strip()
+                if s:
+                    ids.add(s)
+        except Exception:
+            pass
+
+        return ids
+
+    def _admin_only_enabled(self) -> bool:
+        return bool(self._config_get("admin_only_cron", True))
+
+    def _default_retry_times(self) -> int:
+        v = self._config_get("default_retry_times", 0)
+        try:
+            v = int(v)
+        except Exception:
+            v = 0
+        return max(0, v)
+
+    def _ensure_admin(self, event: AstrMessageEvent):
+        if not self._admin_only_enabled():
+            return
+        actor = self._actor_id(event)
+        if actor in self._admin_ids():
+            return
+        raise PermissionError("[E_FORBIDDEN] 当前插件配置为仅管理员可操作 cron 任务")
+
     def _cron_help_text(self) -> str:
         return (
-            "cron 管理（v2.0.3）\n"
-            "1) /cron 添加 任务名 | */5 * * * * | 提醒内容\n"
-            "2) /cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容\n"
+            "cron 管理（v2.0.4）\n"
+            "1) /cron 添加 任务名 | */5 * * * * | 提醒内容 | 可选重试次数\n"
+            "2) /cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容 | 可选重试次数\n"
             "   说明：原 todo 已并入单次提醒\n"
-            "3) /cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容\n"
-            "4) /cron 修改单次 任务ID | 新任务名 | 新执行时间 | 新提醒内容\n"
+            "3) /cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容 | 可选重试次数\n"
+            "4) /cron 修改单次 任务ID | 新任务名 | 新执行时间 | 新提醒内容 | 可选重试次数\n"
             "5) /cron 删除 任务ID\n"
             "6) /cron 启用 任务ID\n"
             "7) /cron 禁用 任务ID\n"
@@ -716,7 +813,8 @@ class CollectSkillPlugin(Star):
             "\n"
             "自然语言识别已交给主助手，请由助手调用工具：\n"
             "- create_cron_task（周期）\n"
-            "- create_once_reminder（单次）"
+            "- create_once_reminder（单次）\n"
+            "管理员控制：可在插件 WebUI 配置中设置 admin_ids 与 admin_only_cron。"
         )
 
     # ---------- store ----------
@@ -783,6 +881,7 @@ class CollectSkillPlugin(Star):
                     run_at=str(item.get("run_at", "")),
                     timezone_name=str(item.get("timezone_name", "Asia/Shanghai")),
                     enabled=bool(item.get("enabled", True)),
+                    retry_times=max(0, int(item.get("retry_times", 0))),
                     last_run_minute=str(item.get("last_run_minute", "")),
                     last_error=str(item.get("last_error", "")),
                     last_run_at=str(item.get("last_run_at", "")),
