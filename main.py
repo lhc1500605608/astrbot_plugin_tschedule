@@ -2,9 +2,10 @@ import asyncio
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -37,13 +38,17 @@ class CronTask:
     timezone_name: str = "Asia/Shanghai"
     enabled: bool = True
     retry_times: int = 0
+    retry_strategy: str = "fixed"  # fixed | exponential
+    retry_interval_seconds: int = 2
+    missed_policy: str = "catch_up"  # catch_up | skip
     last_run_minute: str = ""
+    last_check_at: str = ""
     last_error: str = ""
     last_run_at: str = ""
     future_job_id: str = ""
 
 
-@register("collect_skill", "Tango", "AstrBot 技能汇总（v2.0.4: admin + retry）", "2.0.4")
+@register("collect_skill", "Tango", "AstrBot 技能汇总（v2.1.0: cron reliability）", "2.1.0")
 class CollectSkillPlugin(Star):
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
@@ -78,6 +83,10 @@ class CollectSkillPlugin(Star):
         cron_expression: str,
         reminder: str,
         retry_times: int = -1,
+        timezone: str = "",
+        missed_policy: str = "",
+        retry_strategy: str = "",
+        retry_interval_seconds: int = -1,
     ) -> str:
         """创建周期 cron 任务。
 
@@ -86,10 +95,24 @@ class CollectSkillPlugin(Star):
             cron_expression(string): cron 表达式（5 段），例如 0 9 * * *。
             reminder(string): 提醒内容。
             retry_times(int): 重试次数，缺省时使用插件配置默认值。
+            timezone(string): 时区，如 Asia/Shanghai。
+            missed_policy(string): catch_up 或 skip。
+            retry_strategy(string): fixed 或 exponential。
+            retry_interval_seconds(int): 重试间隔秒数。
         """
         self._ensure_admin(event)
-        retry_part = "" if int(retry_times) < 0 else str(int(retry_times))
-        payload = f"{name} | {cron_expression} | {reminder} | {retry_part}"
+        extras = []
+        if int(retry_times) >= 0:
+            extras.append(str(int(retry_times)))
+        if timezone:
+            extras.append(f"tz={timezone}")
+        if missed_policy:
+            extras.append(f"miss={missed_policy}")
+        if retry_strategy:
+            extras.append(f"retry_strategy={retry_strategy}")
+        if int(retry_interval_seconds) > 0:
+            extras.append(f"retry_interval={int(retry_interval_seconds)}")
+        payload = " | ".join([name, cron_expression, reminder] + extras)
         return await self._create_task(payload, event, run_once=False)
 
     @filter.llm_tool(name="create_once_reminder")
@@ -100,6 +123,10 @@ class CollectSkillPlugin(Star):
         run_at: str,
         reminder: str,
         retry_times: int = -1,
+        timezone: str = "",
+        missed_policy: str = "",
+        retry_strategy: str = "",
+        retry_interval_seconds: int = -1,
     ) -> str:
         """创建单次提醒任务（原 todo 能力合并到 cron）。
 
@@ -108,10 +135,24 @@ class CollectSkillPlugin(Star):
             run_at(string): 执行时间，建议格式 YYYY-MM-DD HH:MM 或 ISO datetime。
             reminder(string): 提醒内容。
             retry_times(int): 重试次数，缺省时使用插件配置默认值。
+            timezone(string): 时区，如 Asia/Shanghai。
+            missed_policy(string): catch_up 或 skip。
+            retry_strategy(string): fixed 或 exponential。
+            retry_interval_seconds(int): 重试间隔秒数。
         """
         self._ensure_admin(event)
-        retry_part = "" if int(retry_times) < 0 else str(int(retry_times))
-        payload = f"{name} | {run_at} | {reminder} | {retry_part}"
+        extras = []
+        if int(retry_times) >= 0:
+            extras.append(str(int(retry_times)))
+        if timezone:
+            extras.append(f"tz={timezone}")
+        if missed_policy:
+            extras.append(f"miss={missed_policy}")
+        if retry_strategy:
+            extras.append(f"retry_strategy={retry_strategy}")
+        if int(retry_interval_seconds) > 0:
+            extras.append(f"retry_interval={int(retry_interval_seconds)}")
+        payload = " | ".join([name, run_at, reminder] + extras)
         return await self._create_task(payload, event, run_once=True)
 
     @filter.llm_tool(name="list_cron_tasks")
@@ -240,30 +281,48 @@ class CollectSkillPlugin(Star):
 
     async def _create_task(self, payload: str, event: AstrMessageEvent, run_once: bool) -> str:
         parts = self._split_payload(payload)
-        if len(parts) not in {3, 4}:
+        if len(parts) < 3:
             if run_once:
-                raise ValueError("[E_PARAM] 单次提醒格式应为：任务名 | 执行时间 | 提醒内容 | 可选重试次数")
-            raise ValueError("[E_PARAM] 创建格式应为：任务名 | cron表达式 | 提醒内容 | 可选重试次数")
+                raise ValueError(
+                    "[E_PARAM] 单次提醒格式应为：任务名 | 执行时间 | 提醒内容 | 可选重试次数 | 可选参数"
+                )
+            raise ValueError(
+                "[E_PARAM] 创建格式应为：任务名 | cron表达式 | 提醒内容 | 可选重试次数 | 可选参数"
+            )
 
-        name, expr_or_time, reminder = parts
+        name, expr_or_time, reminder = parts[0], parts[1], parts[2]
         if not name:
             raise ValueError("[E_PARAM] 任务名不能为空")
         if not reminder:
             raise ValueError("[E_PARAM] 提醒内容不能为空")
 
+        self._check_session_task_limit(event.unified_msg_origin)
+
         cron_expr = ""
         run_at_iso = ""
-        retry_times = self._default_retry_times()
+        options = self._parse_task_options(parts[3:])
+        retry_times = options["retry_times"]
+        timezone_name = options["timezone_name"]
+        missed_policy = options["missed_policy"]
+        retry_strategy = options["retry_strategy"]
+        retry_interval_seconds = options["retry_interval_seconds"]
         if run_once:
-            run_at_dt = self._parse_run_at(expr_or_time)
+            run_at_dt = self._parse_run_at(expr_or_time, timezone_name)
             run_at_iso = run_at_dt.isoformat()
         else:
             cron_expr = expr_or_time
             self._validate_cron_expr(cron_expr)
-        if len(parts) == 4 and parts[3] != "":
-            retry_times = self._safe_int(parts[3], "重试次数")
-            if retry_times < 0:
-                raise ValueError("[E_PARAM] 重试次数不能为负数")
+
+        self._check_duplicate_task(
+            unified_msg_origin=event.unified_msg_origin,
+            run_once=run_once,
+            name=name,
+            reminder=reminder,
+            cron_expr=cron_expr,
+            run_at=run_at_iso,
+            timezone_name=timezone_name,
+            exclude_task_id=None,
+        )
 
         task = CronTask(
             task_id=self.next_task_id,
@@ -274,8 +333,12 @@ class CollectSkillPlugin(Star):
             cron_expr=cron_expr,
             run_once=run_once,
             run_at=run_at_iso,
+            timezone_name=timezone_name,
             enabled=True,
             retry_times=retry_times,
+            retry_strategy=retry_strategy,
+            retry_interval_seconds=retry_interval_seconds,
+            missed_policy=missed_policy,
         )
 
         self.tasks[task.task_id] = task
@@ -284,13 +347,23 @@ class CollectSkillPlugin(Star):
         await self._sync_task_to_future_list(task)
         await self._save_state()
 
+        preview = (
+            task.run_at
+            if task.run_once
+            else self._format_dt(self._next_cron_time(task.cron_expr, task.timezone_name))
+        )
+        preview_text = preview or "无法计算（请检查 cron 表达式）"
+
         if run_once:
             return (
                 f"已创建单次提醒任务 #{task.task_id}\n"
                 f"名称：{task.name}\n"
                 f"执行时间：{task.run_at}\n"
                 f"提醒：{task.reminder}\n"
-                f"重试次数：{task.retry_times}"
+                f"时区：{task.timezone_name}\n"
+                f"错过策略：{task.missed_policy}\n"
+                f"重试：{task.retry_times} 次，间隔 {task.retry_interval_seconds}s，策略 {task.retry_strategy}\n"
+                f"下次触发：{preview_text}"
             )
 
         return (
@@ -298,13 +371,18 @@ class CollectSkillPlugin(Star):
             f"名称：{task.name}\n"
             f"表达式：{task.cron_expr}\n"
             f"提醒：{task.reminder}\n"
-            f"重试次数：{task.retry_times}"
+            f"时区：{task.timezone_name}\n"
+            f"错过策略：{task.missed_policy}\n"
+            f"重试：{task.retry_times} 次，间隔 {task.retry_interval_seconds}s，策略 {task.retry_strategy}\n"
+            f"下次触发：{preview_text}"
         )
 
     async def _update_task(self, payload: str) -> str:
         parts = self._split_payload(payload)
-        if len(parts) not in {4, 5}:
-            raise ValueError("[E_PARAM] 修改格式应为：任务ID | 任务名 | cron表达式 | 提醒内容 | 可选重试次数（不改填 -）")
+        if len(parts) < 4:
+            raise ValueError(
+                "[E_PARAM] 修改格式应为：任务ID | 任务名 | cron表达式 | 提醒内容 | 可选重试次数（不改填 -） | 可选参数"
+            )
 
         task_id = self._safe_int(parts[0], "任务 ID")
         task = self.tasks.get(task_id)
@@ -328,21 +406,39 @@ class CollectSkillPlugin(Star):
             if not new_reminder:
                 raise ValueError("[E_PARAM] 提醒内容不能为空")
             task.reminder = new_reminder
-        if len(parts) == 5 and parts[4] != "-":
-            retry_times = self._safe_int(parts[4], "重试次数")
-            if retry_times < 0:
-                raise ValueError("[E_PARAM] 重试次数不能为负数")
-            task.retry_times = retry_times
+        options = self._parse_task_options(parts[4:], for_update=True)
+        if options["retry_times"] is not None:
+            task.retry_times = options["retry_times"]
+        if options["timezone_name"]:
+            task.timezone_name = options["timezone_name"]
+        if options["missed_policy"]:
+            task.missed_policy = options["missed_policy"]
+        if options["retry_strategy"]:
+            task.retry_strategy = options["retry_strategy"]
+        if options["retry_interval_seconds"] is not None:
+            task.retry_interval_seconds = options["retry_interval_seconds"]
 
         task.last_run_minute = ""
+        self._check_duplicate_task(
+            unified_msg_origin=task.unified_msg_origin,
+            run_once=False,
+            name=task.name,
+            reminder=task.reminder,
+            cron_expr=task.cron_expr,
+            run_at=task.run_at,
+            timezone_name=task.timezone_name,
+            exclude_task_id=task.task_id,
+        )
         await self._sync_task_to_future_list(task)
         await self._save_state()
         return f"任务 #{task_id} 已更新。"
 
     async def _update_once_task(self, payload: str) -> str:
         parts = self._split_payload(payload)
-        if len(parts) not in {4, 5}:
-            raise ValueError("[E_PARAM] 修改单次格式应为：任务ID | 任务名 | 执行时间 | 提醒内容 | 可选重试次数（不改填 -）")
+        if len(parts) < 4:
+            raise ValueError(
+                "[E_PARAM] 修改单次格式应为：任务ID | 任务名 | 执行时间 | 提醒内容 | 可选重试次数（不改填 -） | 可选参数"
+            )
 
         task_id = self._safe_int(parts[0], "任务 ID")
         task = self.tasks.get(task_id)
@@ -352,6 +448,8 @@ class CollectSkillPlugin(Star):
             raise ValueError("[E_PARAM] 该任务是周期任务，请使用 `/cron 修改 ...`")
 
         new_name, new_time, new_reminder = parts[1], parts[2], parts[3]
+        options = self._parse_task_options(parts[4:], for_update=True)
+        target_timezone = options["timezone_name"] or task.timezone_name
 
         if new_name != "-":
             if not new_name:
@@ -359,19 +457,37 @@ class CollectSkillPlugin(Star):
             task.name = new_name
 
         if new_time != "-":
-            task.run_at = self._parse_run_at(new_time).isoformat()
+            task.run_at = self._parse_run_at(new_time, target_timezone).isoformat()
+        elif options["timezone_name"]:
+            # 未修改时间文本时，保持同一触发时刻并切换展示时区。
+            task.run_at = self._parse_run_at(task.run_at, target_timezone).isoformat()
 
         if new_reminder != "-":
             if not new_reminder:
                 raise ValueError("[E_PARAM] 提醒内容不能为空")
             task.reminder = new_reminder
-        if len(parts) == 5 and parts[4] != "-":
-            retry_times = self._safe_int(parts[4], "重试次数")
-            if retry_times < 0:
-                raise ValueError("[E_PARAM] 重试次数不能为负数")
-            task.retry_times = retry_times
+        if options["retry_times"] is not None:
+            task.retry_times = options["retry_times"]
+        if options["timezone_name"]:
+            task.timezone_name = options["timezone_name"]
+        if options["missed_policy"]:
+            task.missed_policy = options["missed_policy"]
+        if options["retry_strategy"]:
+            task.retry_strategy = options["retry_strategy"]
+        if options["retry_interval_seconds"] is not None:
+            task.retry_interval_seconds = options["retry_interval_seconds"]
 
         task.last_run_minute = ""
+        self._check_duplicate_task(
+            unified_msg_origin=task.unified_msg_origin,
+            run_once=True,
+            name=task.name,
+            reminder=task.reminder,
+            cron_expr=task.cron_expr,
+            run_at=task.run_at,
+            timezone_name=task.timezone_name,
+            exclude_task_id=task.task_id,
+        )
         await self._sync_task_to_future_list(task)
         await self._save_state()
         return f"单次任务 #{task_id} 已更新。"
@@ -407,8 +523,10 @@ class CollectSkillPlugin(Star):
             kind = "单次" if t.run_once else "周期"
             schedule = t.run_at if t.run_once else t.cron_expr
             health = "正常" if not t.last_error else f"异常:{t.last_error}"
+            next_run = t.run_at if t.run_once else self._format_dt(self._next_cron_time(t.cron_expr, t.timezone_name))
             lines.append(
-                f"#{t.task_id} [{kind}/{status}] {t.name} | {schedule} | {t.reminder} | 重试:{t.retry_times} | {health} | future:{future_status}"
+                f"#{t.task_id} [{kind}/{status}] {t.name} | {schedule} | TZ:{t.timezone_name} | 下次:{next_run or '未知'} | "
+                f"重试:{t.retry_times}/{t.retry_interval_seconds}s/{t.retry_strategy} | 错过:{t.missed_policy} | {health} | future:{future_status}"
             )
         return "\n".join(lines)
 
@@ -423,7 +541,9 @@ class CollectSkillPlugin(Star):
             f"类型：{'单次' if task.run_once else '周期'}\n"
             f"名称：{task.name}\n"
             f"计划：{schedule}\n"
-            f"重试次数：{task.retry_times}\n"
+            f"时区：{task.timezone_name}\n"
+            f"错过策略：{task.missed_policy}\n"
+            f"重试：{task.retry_times} 次，间隔 {task.retry_interval_seconds}s，策略 {task.retry_strategy}\n"
             f"上次执行：{task.last_run_at or '无'}\n"
             f"上次错误：{task.last_error or '无'}\n"
             f"future_job_id：{task.future_job_id or '无'}"
@@ -434,7 +554,7 @@ class CollectSkillPlugin(Star):
         if not task or task.unified_msg_origin != event.unified_msg_origin:
             raise ValueError(f"[E_NOT_FOUND] 任务 #{task_id} 不存在")
 
-        ok = await self._execute_task(task, datetime.now(), reason="manual")
+        ok = await self._execute_task(task, self._now_in_timezone(task.timezone_name), reason="manual")
         await self._save_state()
         if ok:
             if task.run_once:
@@ -447,7 +567,6 @@ class CollectSkillPlugin(Star):
         while True:
             changed = False
             now = datetime.now()
-            now_minute_key = now.strftime("%Y-%m-%d %H:%M")
 
             to_delete: list[int] = []
             for task in list(self.tasks.values()):
@@ -458,12 +577,24 @@ class CollectSkillPlugin(Star):
                 if task.future_job_id and self._get_cron_manager() is not None:
                     continue
 
+                task_now = self._now_in_timezone(task.timezone_name)
+                now_minute_key = task_now.strftime("%Y-%m-%d %H:%M")
+
                 if task.run_once:
                     if task.last_run_minute == now_minute_key:
                         continue
-                    run_at_dt = self._parse_run_at(task.run_at)
-                    if now >= run_at_dt:
-                        ok = await self._execute_task(task, now, reason="once")
+                    run_at_dt = self._parse_run_at(task.run_at, task.timezone_name)
+                    if task_now >= run_at_dt:
+                        missed_seconds = int((task_now - run_at_dt).total_seconds())
+                        if missed_seconds > 60 and task.missed_policy == "skip":
+                            task.last_run_at = task_now.strftime("%Y-%m-%d %H:%M:%S")
+                            task.last_error = f"跳过执行：错过触发时间约 {missed_seconds // 60} 分钟"
+                            task.last_run_minute = now_minute_key
+                            to_delete.append(task.task_id)
+                            changed = True
+                            continue
+
+                        ok = await self._execute_task(task, task_now, reason="once")
                         task.last_run_minute = now_minute_key
                         changed = True
                         if ok:
@@ -473,11 +604,24 @@ class CollectSkillPlugin(Star):
                 if task.last_run_minute == now_minute_key:
                     continue
 
-                if self._cron_match(task.cron_expr, now):
-                    ok = await self._execute_task(task, now, reason="cron")
+                should_run = self._cron_match(task.cron_expr, task_now)
+                if (
+                    not should_run
+                    and task.missed_policy == "catch_up"
+                    and self._has_missed_cron_between(task, task_now)
+                ):
+                    should_run = True
+
+                if should_run:
+                    ok = await self._execute_task(task, task_now, reason="cron")
                     task.last_run_minute = now_minute_key
                     if not ok and not task.last_error:
                         task.last_error = "执行失败"
+                    changed = True
+
+                check_key = task_now.strftime("%Y-%m-%d %H:%M")
+                if task.last_check_at != check_key:
+                    task.last_check_at = check_key
                     changed = True
 
             for task_id in to_delete:
@@ -508,7 +652,7 @@ class CollectSkillPlugin(Star):
             except Exception as e:
                 last_err = str(e)
                 if attempt < max_attempts:
-                    await asyncio.sleep(min(2 * attempt, 5))
+                    await asyncio.sleep(self._retry_wait_seconds(task, attempt))
 
         task.last_error = f"{reason}失败: {last_err[:120]}"
         return False
@@ -523,6 +667,9 @@ class CollectSkillPlugin(Star):
             "sender_id": task.creator_id or "unknown",
             "note": task.reminder,
             "retry_times": task.retry_times,
+            "retry_strategy": task.retry_strategy,
+            "retry_interval_seconds": task.retry_interval_seconds,
+            "missed_policy": task.missed_policy,
             "origin": "plugin",
             "plugin": "collect_skill",
             "plugin_task_id": task.task_id,
@@ -610,17 +757,24 @@ class CollectSkillPlugin(Star):
         parts = raw.split(" ", 1)
         return parts[1].strip() if len(parts) > 1 else ""
 
-    def _parse_run_at(self, text: str) -> datetime:
+    def _parse_run_at(self, text: str, timezone_name: Optional[str] = None) -> datetime:
         value = text.strip()
         if not value:
             raise ValueError("[E_PARAM] 执行时间不能为空")
+        tz = self._resolve_timezone(timezone_name or self._default_timezone())
         try:
-            return datetime.fromisoformat(value)
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            else:
+                dt = dt.astimezone(tz)
+            return dt
         except Exception:
             pass
 
         try:
-            return datetime.strptime(value, "%Y-%m-%d %H:%M")
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M")
+            return dt.replace(tzinfo=tz)
         except Exception as e:
             raise ValueError("[E_PARAM] 执行时间格式错误，请使用 `YYYY-MM-DD HH:MM` 或 ISO datetime") from e
 
@@ -629,9 +783,10 @@ class CollectSkillPlugin(Star):
         if len(fields) != 5:
             raise ValueError("[E_CRON] cron 表达式必须是 5 段：分 时 日 月 周")
 
+        labels = ["分钟", "小时", "日", "月", "周"]
         ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
         for i, f in enumerate(fields):
-            self._parse_cron_field(f, ranges[i][0], ranges[i][1])
+            self._parse_cron_field(f, ranges[i][0], ranges[i][1], labels[i])
 
     def _cron_match(self, expr: str, now: datetime) -> bool:
         minute, hour, day, month, week = expr.split()
@@ -644,19 +799,20 @@ class CollectSkillPlugin(Star):
         ]
         ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
         fields = [minute, hour, day, month, week]
+        labels = ["分钟", "小时", "日", "月", "周"]
 
-        for field, value, (min_v, max_v) in zip(fields, values, ranges):
-            allowed = self._parse_cron_field(field, min_v, max_v)
+        for field, value, (min_v, max_v), label in zip(fields, values, ranges, labels):
+            allowed = self._parse_cron_field(field, min_v, max_v, label)
             if value not in allowed:
                 return False
         return True
 
-    def _parse_cron_field(self, field: str, min_v: int, max_v: int) -> set:
+    def _parse_cron_field(self, field: str, min_v: int, max_v: int, field_label: str = "字段") -> set:
         result = set()
         for part in field.split(","):
             part = part.strip()
             if not part:
-                raise ValueError(f"[E_CRON] cron 字段 `{field}` 非法")
+                raise ValueError(f"[E_CRON] cron {field_label}字段 `{field}` 非法")
 
             if part == "*":
                 result.update(range(min_v, max_v + 1))
@@ -666,7 +822,7 @@ class CollectSkillPlugin(Star):
                 base, step_str = part.split("/", 1)
                 step = self._safe_int(step_str, f"cron 步长 `{part}`")
                 if step <= 0:
-                    raise ValueError(f"[E_CRON] cron 步长必须大于 0：`{part}`")
+                    raise ValueError(f"[E_CRON] cron {field_label}步长必须大于 0：`{part}`")
 
                 if base == "*":
                     start, end = min_v, max_v
@@ -678,10 +834,10 @@ class CollectSkillPlugin(Star):
                     start = self._safe_int(base, f"cron 字段 `{part}`")
                     end = max_v
 
-                self._check_range(start, min_v, max_v, f"cron 字段 `{part}`")
-                self._check_range(end, min_v, max_v, f"cron 字段 `{part}`")
+                self._check_range(start, min_v, max_v, f"cron {field_label}字段 `{part}`")
+                self._check_range(end, min_v, max_v, f"cron {field_label}字段 `{part}`")
                 if start > end:
-                    raise ValueError(f"[E_CRON] cron 范围起始不能大于结束：`{part}`")
+                    raise ValueError(f"[E_CRON] cron {field_label}范围起始不能大于结束：`{part}`")
 
                 result.update(range(start, end + 1, step))
                 continue
@@ -690,19 +846,19 @@ class CollectSkillPlugin(Star):
                 start_str, end_str = part.split("-", 1)
                 start = self._safe_int(start_str, f"cron 范围 `{part}`")
                 end = self._safe_int(end_str, f"cron 范围 `{part}`")
-                self._check_range(start, min_v, max_v, f"cron 范围 `{part}`")
-                self._check_range(end, min_v, max_v, f"cron 范围 `{part}`")
+                self._check_range(start, min_v, max_v, f"cron {field_label}范围 `{part}`")
+                self._check_range(end, min_v, max_v, f"cron {field_label}范围 `{part}`")
                 if start > end:
-                    raise ValueError(f"[E_CRON] cron 范围起始不能大于结束：`{part}`")
+                    raise ValueError(f"[E_CRON] cron {field_label}范围起始不能大于结束：`{part}`")
                 result.update(range(start, end + 1))
                 continue
 
             value = self._safe_int(part, f"cron 字段 `{part}`")
-            self._check_range(value, min_v, max_v, f"cron 字段 `{part}`")
+            self._check_range(value, min_v, max_v, f"cron {field_label}字段 `{part}`")
             result.add(value)
 
         if not result:
-            raise ValueError(f"[E_CRON] cron 字段 `{field}` 解析后为空")
+            raise ValueError(f"[E_CRON] cron {field_label}字段 `{field}` 解析后为空")
         return result
 
     def _check_range(self, value: int, min_v: int, max_v: int, label: str):
@@ -830,6 +986,242 @@ class CollectSkillPlugin(Star):
             v = 0
         return max(0, v)
 
+    def _default_retry_interval_seconds(self) -> int:
+        v = self._config_get("default_retry_interval_seconds", 2)
+        try:
+            v = int(v)
+        except Exception:
+            v = 2
+        return max(1, v)
+
+    def _default_retry_strategy(self) -> str:
+        return self._normalize_retry_strategy(self._config_get("default_retry_strategy", "fixed"))
+
+    def _default_timezone(self) -> str:
+        tz = str(self._config_get("default_timezone", "Asia/Shanghai")).strip() or "Asia/Shanghai"
+        self._resolve_timezone(tz)
+        return tz
+
+    def _default_missed_policy(self) -> str:
+        return self._normalize_missed_policy(self._config_get("default_missed_policy", "catch_up"))
+
+    def _session_task_limit(self) -> int:
+        v = self._config_get("session_task_limit", 50)
+        try:
+            v = int(v)
+        except Exception:
+            v = 50
+        return max(1, v)
+
+    def _duplicate_check_enabled(self) -> bool:
+        return bool(self._config_get("duplicate_check", True))
+
+    def _catch_up_scan_limit_minutes(self) -> int:
+        v = self._config_get("catch_up_scan_limit_minutes", 180)
+        try:
+            v = int(v)
+        except Exception:
+            v = 180
+        return min(1440, max(10, v))
+
+    def _normalize_missed_policy(self, raw: Any) -> str:
+        value = str(raw or "").strip().lower()
+        if value in {"catch_up", "catchup", "补执行", "补跑", "补偿"}:
+            return "catch_up"
+        if value in {"skip", "跳过"}:
+            return "skip"
+        raise ValueError("[E_PARAM] 错过策略仅支持 catch_up/补执行 或 skip/跳过")
+
+    def _normalize_retry_strategy(self, raw: Any) -> str:
+        value = str(raw or "").strip().lower()
+        if value in {"fixed", "固定"}:
+            return "fixed"
+        if value in {"exponential", "指数", "指数退避"}:
+            return "exponential"
+        raise ValueError("[E_PARAM] 重试策略仅支持 fixed/固定 或 exponential/指数")
+
+    def _resolve_timezone(self, timezone_name: str) -> ZoneInfo:
+        try:
+            return ZoneInfo(str(timezone_name).strip())
+        except Exception as e:
+            raise ValueError(f"[E_PARAM] 时区无效：`{timezone_name}`，例如 `Asia/Shanghai`") from e
+
+    def _now_in_timezone(self, timezone_name: str) -> datetime:
+        return datetime.now(self._resolve_timezone(timezone_name))
+
+    def _parse_task_options(self, raw_parts: list[str], for_update: bool = False) -> Dict[str, Any]:
+        retry_times = None if for_update else self._default_retry_times()
+        timezone_name = None if for_update else self._default_timezone()
+        missed_policy = None if for_update else self._default_missed_policy()
+        retry_strategy = None if for_update else self._default_retry_strategy()
+        retry_interval_seconds = None if for_update else self._default_retry_interval_seconds()
+
+        pending_tokens = []
+        for token in raw_parts:
+            t = token.strip()
+            if not t:
+                continue
+            if t == "-":
+                continue
+            pending_tokens.append(t)
+
+        for token in pending_tokens:
+            if "=" in token:
+                key, value = token.split("=", 1)
+            elif "：" in token:
+                key, value = token.split("：", 1)
+            elif ":" in token:
+                key, value = token.split(":", 1)
+            else:
+                key, value = "", token
+
+            key = key.strip().lower()
+            value = value.strip()
+
+            if not key:
+                if re.fullmatch(r"-?\d+", value):
+                    rv = self._safe_int(value, "重试次数")
+                    if rv < 0:
+                        raise ValueError("[E_PARAM] 重试次数不能为负数")
+                    retry_times = rv
+                    continue
+                lowered = value.lower()
+                if lowered in {"catch_up", "catchup", "补执行", "补跑", "补偿", "skip", "跳过"}:
+                    missed_policy = self._normalize_missed_policy(value)
+                    continue
+                if lowered in {"fixed", "固定", "exponential", "指数", "指数退避"}:
+                    retry_strategy = self._normalize_retry_strategy(value)
+                    continue
+                raise ValueError(
+                    f"[E_PARAM] 无法识别可选参数：`{value}`，支持如 retry=2 | tz=Asia/Shanghai | miss=skip"
+                )
+
+            if key in {"retry", "retry_times", "重试", "重试次数"}:
+                rv = self._safe_int(value, "重试次数")
+                if rv < 0:
+                    raise ValueError("[E_PARAM] 重试次数不能为负数")
+                retry_times = rv
+                continue
+
+            if key in {"tz", "timezone", "时区"}:
+                self._resolve_timezone(value)
+                timezone_name = value
+                continue
+
+            if key in {"miss", "missed", "missed_policy", "错过策略"}:
+                missed_policy = self._normalize_missed_policy(value)
+                continue
+
+            if key in {"retry_strategy", "重试策略"}:
+                retry_strategy = self._normalize_retry_strategy(value)
+                continue
+
+            if key in {"retry_interval", "retry_interval_seconds", "重试间隔", "重试间隔秒"}:
+                iv = self._safe_int(value, "重试间隔秒数")
+                if iv <= 0:
+                    raise ValueError("[E_PARAM] 重试间隔秒数必须大于 0")
+                retry_interval_seconds = iv
+                continue
+
+            raise ValueError(f"[E_PARAM] 未知可选参数：`{key}`")
+
+        return {
+            "retry_times": retry_times,
+            "timezone_name": timezone_name,
+            "missed_policy": missed_policy,
+            "retry_strategy": retry_strategy,
+            "retry_interval_seconds": retry_interval_seconds,
+        }
+
+    def _check_session_task_limit(self, unified_msg_origin: str):
+        count = sum(1 for t in self.tasks.values() if t.unified_msg_origin == unified_msg_origin)
+        limit = self._session_task_limit()
+        if count >= limit:
+            raise ValueError(f"[E_LIMIT] 当前会话任务数已达上限（{limit}）")
+
+    def _check_duplicate_task(
+        self,
+        unified_msg_origin: str,
+        run_once: bool,
+        name: str,
+        reminder: str,
+        cron_expr: str,
+        run_at: str,
+        timezone_name: str,
+        exclude_task_id: Optional[int],
+    ):
+        if not self._duplicate_check_enabled():
+            return
+        for task in self.tasks.values():
+            if exclude_task_id is not None and task.task_id == exclude_task_id:
+                continue
+            if task.unified_msg_origin != unified_msg_origin:
+                continue
+            if task.run_once != run_once:
+                continue
+            if task.name != name or task.reminder != reminder:
+                continue
+            if task.timezone_name != timezone_name:
+                continue
+            if run_once and task.run_at == run_at:
+                raise ValueError("[E_DUPLICATE] 检测到重复单次提醒（同会话/同名称/同时间/同内容）")
+            if (not run_once) and task.cron_expr == cron_expr:
+                raise ValueError("[E_DUPLICATE] 检测到重复 cron 任务（同会话/同表达式/同内容）")
+
+    def _next_cron_time(self, expr: str, timezone_name: str) -> Optional[datetime]:
+        tz = self._resolve_timezone(timezone_name)
+        cursor = datetime.now(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
+        for _ in range(0, 366 * 24 * 60):
+            if self._cron_match(expr, cursor):
+                return cursor
+            cursor += timedelta(minutes=1)
+        return None
+
+    def _format_dt(self, dt: Optional[datetime]) -> str:
+        if dt is None:
+            return ""
+        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    def _retry_wait_seconds(self, task: CronTask, attempt: int) -> int:
+        base = max(1, int(task.retry_interval_seconds))
+        if task.retry_strategy == "exponential":
+            return min(300, base * (2 ** (attempt - 1)))
+        return min(300, base)
+
+    def _parse_minute_key(self, text: str, timezone_name: str) -> Optional[datetime]:
+        if not text:
+            return None
+        try:
+            dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
+            return dt.replace(tzinfo=self._resolve_timezone(timezone_name))
+        except Exception:
+            return None
+
+    def _has_missed_cron_between(self, task: CronTask, now_dt: datetime) -> bool:
+        last_checked = self._parse_minute_key(task.last_check_at, task.timezone_name)
+        if last_checked is None:
+            return False
+
+        current_minute = now_dt.replace(second=0, microsecond=0)
+        if current_minute <= last_checked:
+            return False
+
+        gap_minutes = int((current_minute - last_checked).total_seconds() // 60)
+        if gap_minutes <= 1:
+            return False
+
+        scan_limit = self._catch_up_scan_limit_minutes()
+        if gap_minutes > scan_limit:
+            # 超过扫描上限时，保守补执行一次，避免长时间离线后完全漏提醒。
+            return True
+
+        cursor = last_checked + timedelta(minutes=1)
+        while cursor < current_minute:
+            if self._cron_match(task.cron_expr, cursor):
+                return True
+            cursor += timedelta(minutes=1)
+        return False
+
     def _ensure_admin(self, event: AstrMessageEvent):
         if not self._admin_only_enabled():
             return
@@ -839,18 +1231,21 @@ class CollectSkillPlugin(Star):
 
     def _cron_help_text(self) -> str:
         return (
-            "cron 管理（v2.0.4）\n"
-            "1) /cron 添加 任务名 | */5 * * * * | 提醒内容 | 可选重试次数\n"
-            "2) /cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容 | 可选重试次数\n"
+            "cron 管理（v2.1.0）\n"
+            "1) /cron 添加 任务名 | */5 * * * * | 提醒内容 | 可选重试次数 | 可选参数\n"
+            "2) /cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容 | 可选重试次数 | 可选参数\n"
             "   说明：原 todo 已并入单次提醒\n"
-            "3) /cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容 | 可选重试次数\n"
-            "4) /cron 修改单次 任务ID | 新任务名 | 新执行时间 | 新提醒内容 | 可选重试次数\n"
+            "3) /cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容 | 可选重试次数 | 可选参数\n"
+            "4) /cron 修改单次 任务ID | 新任务名 | 新执行时间 | 新提醒内容 | 可选重试次数 | 可选参数\n"
             "5) /cron 删除 任务ID\n"
             "6) /cron 启用 任务ID\n"
             "7) /cron 禁用 任务ID\n"
             "8) /cron 列表\n"
             "9) /cron 日志 任务ID\n"
             "10) /cron 立即执行 任务ID\n"
+            "\n"
+            "可选参数示例：tz=Asia/Shanghai | miss=catch_up(或skip) | retry_strategy=fixed(或exponential) | retry_interval=5\n"
+            "创建后会回显“下次触发时间预览”。\n"
             "\n"
             "自然语言识别已交给主助手，请由助手调用工具：\n"
             "- create_cron_task（周期）\n"
@@ -923,11 +1318,23 @@ class CollectSkillPlugin(Star):
                     timezone_name=str(item.get("timezone_name", "Asia/Shanghai")),
                     enabled=bool(item.get("enabled", True)),
                     retry_times=max(0, int(item.get("retry_times", 0))),
+                    retry_strategy=str(item.get("retry_strategy", "fixed")),
+                    retry_interval_seconds=max(1, int(item.get("retry_interval_seconds", 2))),
+                    missed_policy=str(item.get("missed_policy", "catch_up")),
                     last_run_minute=str(item.get("last_run_minute", "")),
+                    last_check_at=str(item.get("last_check_at", "")),
                     last_error=str(item.get("last_error", "")),
                     last_run_at=str(item.get("last_run_at", "")),
                     future_job_id=str(item.get("future_job_id", "")),
                 )
+                try:
+                    task.retry_strategy = self._normalize_retry_strategy(task.retry_strategy)
+                except Exception:
+                    task.retry_strategy = "fixed"
+                try:
+                    task.missed_policy = self._normalize_missed_policy(task.missed_policy)
+                except Exception:
+                    task.missed_policy = "catch_up"
                 if task.task_id > 0 and task.name and task.reminder and task.unified_msg_origin:
                     if task.run_once:
                         if task.run_at:

@@ -1,15 +1,18 @@
 # astrbot-plugin-collect-skill
 
-一个面向 AstrBot 的提醒调度插件，当前版本 `v2.0.4`，聚焦 `cron + 单次提醒`。
+一个面向 AstrBot 的提醒调度插件，当前版本 `v2.1.0`，聚焦 `cron + 单次提醒`。
 
 ## 功能概览
 
 - 周期任务：支持创建、修改、删除、启用、禁用、列表、立即执行、日志查询
 - 单次提醒：已并入 `/cron` 命令（原 `todo` 能力）
 - 权限控制：可在插件配置中开启“仅管理员可操作 cron”
-- 重试机制：支持任务级自定义重试次数
+- 重试机制：支持重试次数、固定/指数策略、重试间隔
+- 触发策略：支持错过触发点后 `catch_up`（补执行）或 `skip`（跳过）
+- 时区能力：支持默认时区 + 任务级时区覆盖
 - 主动能力同步：任务会同步到 AstrBot future task 列表
 - LLM 工具支持：可由主助手识别自然语言后调用工具创建任务
+- 任务治理：支持单会话任务上限与重复任务检测
 
 ## 安装与使用
 
@@ -19,10 +22,10 @@
 
 ## 命令说明（统一 /cron）
 
-- `/cron 添加 任务名 | */5 * * * * | 提醒内容 | 可选重试次数`
-- `/cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容 | 可选重试次数`
-- `/cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容 | 可选重试次数`
-- `/cron 修改单次 任务ID | 新任务名 | 新执行时间 | 新提醒内容 | 可选重试次数`
+- `/cron 添加 任务名 | */5 * * * * | 提醒内容 | 可选重试次数 | 可选参数...`
+- `/cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容 | 可选重试次数 | 可选参数...`
+- `/cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容 | 可选重试次数 | 可选参数...`
+- `/cron 修改单次 任务ID | 新任务名 | 新执行时间 | 新提醒内容 | 可选重试次数 | 可选参数...`
 - `/cron 删除 任务ID`
 - `/cron 启用 任务ID`
 - `/cron 禁用 任务ID`
@@ -33,6 +36,8 @@
 说明：
 - 单次时间支持 `YYYY-MM-DD HH:MM` 或 ISO datetime。  
 - 本版本不再提供 `/todo`、`/skill` 命令。  
+- 可选参数支持：`tz=Asia/Shanghai`、`miss=catch_up|skip`、`retry_strategy=fixed|exponential`、`retry_interval=秒数`。  
+- 创建任务后会返回“下次触发时间预览”。  
 
 ## WebUI 插件配置
 
@@ -41,6 +46,13 @@
 - `admin_only_cron`：是否仅允许管理员操作 cron（默认开启）
 - `admin_ids`：插件管理员列表，支持多个用户 ID
 - `default_retry_times`：新建任务默认重试次数
+- `default_retry_interval_seconds`：默认重试间隔秒数
+- `default_retry_strategy`：默认重试策略（fixed/exponential）
+- `default_timezone`：默认时区
+- `default_missed_policy`：默认错过策略（catch_up/skip）
+- `session_task_limit`：单会话任务上限
+- `duplicate_check`：是否拦截重复任务
+- `catch_up_scan_limit_minutes`：补执行扫描窗口（分钟）
 
 说明：
 - 当 `admin_only_cron=true` 时，非管理员只能查看任务，不能创建/修改/删除/启停/立即执行。  
@@ -54,6 +66,9 @@
 - `create_once_reminder(name, run_at, reminder)`
 - `list_cron_tasks()`
 - `delete_cron_task(task_id)`
+
+补充：
+- `create_cron_task` / `create_once_reminder` 支持可选参数：`retry_times`、`timezone`、`missed_policy`、`retry_strategy`、`retry_interval_seconds`。
 
 推荐策略：主助手负责自然语言理解与时间解析，插件负责执行与调度。
 

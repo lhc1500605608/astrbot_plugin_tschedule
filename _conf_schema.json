@@ -16,5 +16,40 @@
     "type": "int",
     "description": "新建任务默认重试次数（可在命令中按任务覆盖）",
     "default": 0
+  },
+  "default_retry_interval_seconds": {
+    "type": "int",
+    "description": "重试间隔秒数（默认策略使用）",
+    "default": 2
+  },
+  "default_retry_strategy": {
+    "type": "string",
+    "description": "默认重试策略：fixed 或 exponential",
+    "default": "fixed"
+  },
+  "default_timezone": {
+    "type": "string",
+    "description": "默认任务时区，例如 Asia/Shanghai",
+    "default": "Asia/Shanghai"
+  },
+  "default_missed_policy": {
+    "type": "string",
+    "description": "错过触发点策略：catch_up 或 skip",
+    "default": "catch_up"
+  },
+  "session_task_limit": {
+    "type": "int",
+    "description": "单会话任务数量上限",
+    "default": 50
+  },
+  "duplicate_check": {
+    "type": "bool",
+    "description": "是否阻止同会话重复任务",
+    "default": true
+  },
+  "catch_up_scan_limit_minutes": {
+    "type": "int",
+    "description": "补执行扫描窗口（分钟）",
+    "default": 180
   }
 }
