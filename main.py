@@ -777,6 +777,48 @@ class CollectSkillPlugin(Star):
 
         return ids
 
+    def _normalize_admin_text(self, text: str) -> str:
+        s = str(text).strip().lower()
+        # 常见分隔/前缀符号统一去除，提升关键词匹配容错
+        for ch in (" ", "\t", "\n", "-", "_", ":", "|", "@"):
+            s = s.replace(ch, "")
+        return s
+
+    def _admin_match_candidates(self, event: AstrMessageEvent) -> list[str]:
+        candidates = []
+
+        actor = self._actor_id(event)
+        if actor:
+            candidates.append(actor)
+
+        sender = getattr(event, "sender", None)
+        if sender is not None:
+            for key in ("id", "user_id", "uid", "nickname", "name", "username"):
+                value = getattr(sender, key, None)
+                if value is not None:
+                    candidates.append(str(value))
+
+        for key in ("sender_id", "user_id", "userId", "uid"):
+            value = getattr(event, key, None)
+            if value is not None:
+                candidates.append(str(value))
+
+        return candidates
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        admin_keywords = [self._normalize_admin_text(x) for x in self._admin_ids() if str(x).strip()]
+        if not admin_keywords:
+            return False
+
+        candidates = [self._normalize_admin_text(x) for x in self._admin_match_candidates(event)]
+        for keyword in admin_keywords:
+            if not keyword:
+                continue
+            for cand in candidates:
+                if cand == keyword or keyword in cand:
+                    return True
+        return False
+
     def _admin_only_enabled(self) -> bool:
         return bool(self._config_get("admin_only_cron", True))
 
@@ -791,8 +833,7 @@ class CollectSkillPlugin(Star):
     def _ensure_admin(self, event: AstrMessageEvent):
         if not self._admin_only_enabled():
             return
-        actor = self._actor_id(event)
-        if actor in self._admin_ids():
+        if self._is_admin(event):
             return
         raise PermissionError("[E_FORBIDDEN] 当前插件配置为仅管理员可操作 cron 任务")
 
