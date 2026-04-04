@@ -1,79 +1,62 @@
-# astrbot-plugin-tschedule
+# astrbot_plugin_tschedule
 
-一个面向 AstrBot 的计划任务提醒插件，当前版本 `v2.1.1`，聚焦 `cron + 单次提醒`。
+`Astrbot计划任务提醒` 是一个面向 AstrBot 的计划任务插件，专注于稳定、可治理的提醒调度能力。
 
-## 功能概览
+## 特性
 
-- 周期任务：支持创建、修改、删除、启用、禁用、列表、立即执行、日志查询
-- 单次提醒：已并入 `/cron` 命令（原 `todo` 能力）
-- 权限控制：可在插件配置中开启“仅管理员可操作 cron”
-- 重试机制：支持重试次数、固定/指数策略、重试间隔
-- 触发策略：支持错过触发点后 `catch_up`（补执行）或 `skip`（跳过）
-- 时区能力：支持默认时区 + 任务级时区覆盖
-- 主动能力同步：任务会同步到 AstrBot future task 列表
-- LLM 工具支持：可由主助手识别自然语言后调用工具创建任务
-- 任务治理：支持单会话任务上限与重复任务检测
+- 统一 `/cron` 命令，支持周期任务与单次提醒
+- 支持任务创建、修改、删除、启用/禁用、立即执行、日志查询
+- 支持重试次数、重试策略、重试间隔
+- 支持时区、错过触发策略（补执行/跳过）
+- 支持管理员控制、任务去重、单会话任务上限
+- 可同步到 AstrBot future task 列表
 
-## 安装与使用
+## 快速开始
 
-1. 将本插件放入 AstrBot 插件目录并启用。  
-2. 在会话中使用 `/cron 帮助` 查看指令。  
-3. 如需自然语言创建提醒，建议给主助手配置本仓库的 [SYSTEM_PROMPT_TEMPLATE.md](./SYSTEM_PROMPT_TEMPLATE.md)。
+1. 安装并启用插件：`astrbot_plugin_tschedule`
+2. 在会话中输入：`/cron 帮助`
+3. 按帮助示例创建你的第一个任务
 
-## 命令说明（统一 /cron）
+## 命令示例
 
-- `/cron 添加 任务名 | */5 * * * * | 提醒内容 | 可选重试次数 | 可选参数...`
-- `/cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容 | 可选重试次数 | 可选参数...`
-- `/cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容 | 可选重试次数 | 可选参数...`
-- `/cron 修改单次 任务ID | 新任务名 | 新执行时间 | 新提醒内容 | 可选重试次数 | 可选参数...`
-- `/cron 删除 任务ID`
-- `/cron 启用 任务ID`
-- `/cron 禁用 任务ID`
+- `/cron 添加 早报 | 0 9 * * * | 记得查看今日安排`
+- `/cron 单次 开会提醒 | 2026-04-05 09:30 | 10分钟后会议开始`
 - `/cron 列表`
-- `/cron 日志 任务ID`
-- `/cron 立即执行 任务ID`
+- `/cron 日志 1`
+- `/cron 立即执行 1`
 
-说明：
-- 单次时间支持 `YYYY-MM-DD HH:MM` 或 ISO datetime。  
-- 本版本不再提供 `/todo`、`/skill` 命令。  
-- 可选参数支持：`tz=Asia/Shanghai`、`miss=catch_up|skip`、`retry_strategy=fixed|exponential`、`retry_interval=秒数`。  
-- 创建任务后会返回“下次触发时间预览”。  
+## 可选参数
 
-## WebUI 插件配置
+创建/修改任务时可追加参数：
 
-本插件已提供 WebUI 配置菜单（由 `_conf_schema.json` 定义）：
+- `retry=2`：失败重试次数
+- `tz=Asia/Shanghai`：任务时区
+- `miss=catch_up|skip`：错过触发点策略
+- `retry_strategy=fixed|exponential`：重试策略
+- `retry_interval=5`：重试间隔（秒）
 
-- `admin_only_cron`：是否仅允许管理员操作 cron（默认开启）
-- `admin_ids`：插件管理员列表，支持多个用户 ID
-- `default_retry_times`：新建任务默认重试次数
-- `default_retry_interval_seconds`：默认重试间隔秒数
-- `default_retry_strategy`：默认重试策略（fixed/exponential）
+## WebUI 配置（节选）
+
+- `admin_only_cron`：是否仅管理员可操作
+- `admin_ids`：插件附加管理员（默认也会读取 AstrBot 全局管理员）
 - `default_timezone`：默认时区
-- `default_missed_policy`：默认错过策略（catch_up/skip）
+- `default_retry_times`：默认重试次数
 - `session_task_limit`：单会话任务上限
-- `duplicate_check`：是否拦截重复任务
-- `catch_up_scan_limit_minutes`：补执行扫描窗口（分钟）
+- `duplicate_check`：是否启用重复任务检测
 
-说明：
-- 当 `admin_only_cron=true` 时，非管理员只能查看任务，不能创建/修改/删除/启停/立即执行。  
-- 任务可在命令中覆盖重试次数，不填时使用 `default_retry_times`。  
+完整配置见 [_conf_schema.json](./_conf_schema.json)。
 
-## LLM 工具接口
+## 与助手联动
 
-给主助手调用的工具如下：
+如需让主助手通过自然语言调用任务创建能力，可参考 [SYSTEM_PROMPT_TEMPLATE.md](./SYSTEM_PROMPT_TEMPLATE.md)。
 
-- `create_cron_task(name, cron_expression, reminder)`
-- `create_once_reminder(name, run_at, reminder)`
-- `list_cron_tasks()`
-- `delete_cron_task(task_id)`
+## 许可证
 
-补充：
-- `create_cron_task` / `create_once_reminder` 支持可选参数：`retry_times`、`timezone`、`missed_policy`、`retry_strategy`、`retry_interval_seconds`。
+本项目基于 **GNU Affero General Public License v3.0 (AGPL-3.0)** 开源。  
+详情请参阅 [LICENSE](./LICENSE) 文件。
 
-推荐策略：主助手负责自然语言理解与时间解析，插件负责执行与调度。
+## 相关链接
 
-## 参考
-
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot)
+- [AstrBot 插件开发文档（中文）](https://docs.astrbot.app/dev/star/plugin-new.html)
+- [AstrBot Plugin Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
