@@ -40,6 +40,7 @@ class CronTask:
     retry_times: int = 0
     last_error: str = ""
     last_run_at: str = ""
+    future_job_id: str = ""
 
 
 @dataclass
@@ -64,7 +65,7 @@ class AuditLog:
     unified_msg_origin: str
 
 
-@register("collect_skill", "Tango", "AstrBot 技能汇总（v2.0.1: cron+todo+import/export）", "2.0.1")
+@register("collect_skill", "Tango", "AstrBot 技能汇总（v2.0.2: cron+todo+import/export）", "2.0.2")
 class CollectSkillPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -86,6 +87,7 @@ class CollectSkillPlugin(Star):
 
     async def initialize(self):
         await self._load_state()
+        await self._sync_all_tasks_to_future_list()
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
         logger.info("[collect_skill] scheduler started, cron=%s todo=%s", len(self.tasks), len(self.todos))
 
@@ -286,6 +288,7 @@ class CollectSkillPlugin(Star):
 
         self.tasks[task.task_id] = task
         self.next_task_id += 1
+        await self._sync_task_to_future_list(task)
         await self._save_state()
 
         return (
@@ -333,6 +336,7 @@ class CollectSkillPlugin(Star):
 
         task.last_run_minute = ""
         task.last_pre_notify_key = ""
+        await self._sync_task_to_future_list(task)
         await self._save_state()
         return f"任务 #{task_id} 已更新。"
 
@@ -343,6 +347,7 @@ class CollectSkillPlugin(Star):
 
         self._ensure_owner_or_admin(task.creator_id, event, "[E_FORBIDDEN] 你无权删除该任务")
 
+        await self._delete_task_from_future_list(task)
         del self.tasks[task_id]
         await self._save_state()
         return f"任务 #{task_id} 已删除。"
@@ -352,6 +357,7 @@ class CollectSkillPlugin(Star):
         if not task:
             raise ValueError(f"[E_NOT_FOUND] 任务 #{task_id} 不存在")
         task.enabled = enabled
+        await self._sync_task_to_future_list(task)
         await self._save_state()
         return f"任务 #{task_id} 已{'启用' if enabled else '禁用'}。"
 
@@ -364,8 +370,9 @@ class CollectSkillPlugin(Star):
         for t in sorted(items, key=lambda x: x.task_id):
             status = "启用" if t.enabled else "禁用"
             health = "正常" if not t.last_error else f"异常:{t.last_error}"
+            future_status = t.future_job_id if t.future_job_id else "未同步"
             lines.append(
-                f"#{t.task_id} [{status}] {t.name} | {t.cron_expr} | 预提醒:{t.pre_notify_minutes}m 重试:{t.retry_times} | {health}"
+                f"#{t.task_id} [{status}] {t.name} | {t.cron_expr} | 预提醒:{t.pre_notify_minutes}m 重试:{t.retry_times} | {health} | future:{future_status}"
             )
         return "\n".join(lines)
 
@@ -402,6 +409,9 @@ class CollectSkillPlugin(Star):
 
             for task in list(self.tasks.values()):
                 if not task.enabled:
+                    continue
+                if task.future_job_id and self._get_cron_manager() is not None:
+                    # 已同步到 AstrBot Future Task，由平台侧调度，避免双重提醒。
                     continue
 
                 # 预提醒：在触发前 N 分钟推送一次。
@@ -1055,6 +1065,88 @@ class CollectSkillPlugin(Star):
             f"/cron 添加 提醒任务 | 30 9 * * * | {reminder}"
         )
 
+    def _get_cron_manager(self):
+        return getattr(self.context, "cron_manager", None)
+
+    def _build_future_payload(self, task: CronTask) -> dict:
+        return {
+            "session": task.unified_msg_origin,
+            "sender_id": task.creator_id or "unknown",
+            "note": self._build_future_note(task),
+            "origin": "plugin",
+            "plugin": "collect_skill",
+            "plugin_task_id": task.task_id,
+        }
+
+    def _build_future_note(self, task: CronTask) -> str:
+        return (
+            f"请在合适时机提醒用户：{task.reminder}。"
+            f"（任务名：{task.name}；cron：{task.cron_expr}；来源：collect_skill）"
+        )
+
+    async def _sync_task_to_future_list(self, task: CronTask):
+        cron_mgr = self._get_cron_manager()
+        if cron_mgr is None:
+            return
+
+        payload = self._build_future_payload(task)
+        description = payload.get("note") or task.reminder
+
+        try:
+            if task.future_job_id:
+                job = await cron_mgr.update_job(
+                    task.future_job_id,
+                    name=task.name,
+                    cron_expression=task.cron_expr,
+                    description=description,
+                    enabled=task.enabled,
+                    timezone=task.timezone_name,
+                    payload=payload,
+                    run_once=False,
+                )
+                if job is not None:
+                    return
+                task.future_job_id = ""
+
+            job = await cron_mgr.add_active_job(
+                name=task.name,
+                cron_expression=task.cron_expr,
+                payload=payload,
+                description=description,
+                timezone=task.timezone_name,
+                enabled=task.enabled,
+                run_once=False,
+                persistent=True,
+            )
+            task.future_job_id = str(getattr(job, "job_id", "") or "")
+        except Exception as e:
+            logger.warning("[collect_skill] sync future task failed for #%s: %s", task.task_id, e)
+
+    async def _delete_task_from_future_list(self, task: CronTask):
+        cron_mgr = self._get_cron_manager()
+        if cron_mgr is None:
+            return
+        if not task.future_job_id:
+            return
+        try:
+            await cron_mgr.delete_job(task.future_job_id)
+            task.future_job_id = ""
+        except Exception as e:
+            logger.warning("[collect_skill] delete future task failed for #%s: %s", task.task_id, e)
+
+    async def _sync_all_tasks_to_future_list(self):
+        cron_mgr = self._get_cron_manager()
+        if cron_mgr is None:
+            return
+        changed = False
+        for task in self.tasks.values():
+            before = task.future_job_id
+            await self._sync_task_to_future_list(task)
+            if task.future_job_id != before:
+                changed = True
+        if changed:
+            await self._save_state()
+
     def _looks_like_todo_keyword(self, text: str) -> bool:
         return bool(
             re.match(
@@ -1203,6 +1295,7 @@ class CollectSkillPlugin(Star):
                     retry_times=max(0, int(item.get("retry_times", 0))),
                     last_error=str(item.get("last_error", "")),
                     last_run_at=str(item.get("last_run_at", "")),
+                    future_job_id=str(item.get("future_job_id", "")),
                 )
                 if task.task_id > 0 and task.name and task.cron_expr and task.unified_msg_origin:
                     tasks[task.task_id] = task

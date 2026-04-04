@@ -1,6 +1,6 @@
 name: astrbot_plugin_collect_skill
 display_name: "Astrbot 技能汇总"
-desc: AstrBot 复合技能插件（v2.0.1：cron 增强 + 自然语言提醒 + todo + skill 导入导出 + 审计）。
-version: v2.0.1
+desc: AstrBot 复合技能插件（v2.0.2：cron 同步 future task + 自然语言提醒 + todo + skill 导入导出 + 审计）。
+version: v2.0.2
 author: Tango
 repo: https://github.com/Tango/astrbot_plugin_collect_skill
