@@ -11,7 +11,6 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
-
 KV_KEY_CRON_TASKS_V2 = "cron_tasks_v2"
 KV_KEY_CRON_NEXT_ID_V2 = "cron_next_id_v2"
 
@@ -57,9 +56,15 @@ class TschedulePlugin(Star):
         self.next_task_id: int = 1
 
         self._scheduler_task: Optional[asyncio.Task] = None
-        self._local_store_path = Path(__file__).resolve().parent / ".tschedule_store_v2.json"
-        self._legacy_local_store_path_v2 = Path(__file__).resolve().parent / ".collect_skill_store_v2.json"
-        self._legacy_local_store_path = Path(__file__).resolve().parent / ".cron_tasks_v1.json"
+        self._local_store_path = (
+            Path(__file__).resolve().parent / ".tschedule_store_v2.json"
+        )
+        self._legacy_local_store_path_v2 = (
+            Path(__file__).resolve().parent / ".collect_skill_store_v2.json"
+        )
+        self._legacy_local_store_path = (
+            Path(__file__).resolve().parent / ".cron_tasks_v1.json"
+        )
 
     async def initialize(self):
         await self._load_state()
@@ -280,7 +285,9 @@ class TschedulePlugin(Star):
             "输入 `/cron 帮助` 查看格式。自然语言提醒请让主助手调用工具：create_cron_task / create_once_reminder。"
         )
 
-    async def _create_task(self, payload: str, event: AstrMessageEvent, run_once: bool) -> str:
+    async def _create_task(
+        self, payload: str, event: AstrMessageEvent, run_once: bool
+    ) -> str:
         parts = self._split_payload(payload)
         if len(parts) < 3:
             if run_once:
@@ -351,7 +358,9 @@ class TschedulePlugin(Star):
         preview = (
             task.run_at
             if task.run_once
-            else self._format_dt(self._next_cron_time(task.cron_expr, task.timezone_name))
+            else self._format_dt(
+                self._next_cron_time(task.cron_expr, task.timezone_name)
+            )
         )
         preview_text = preview or "无法计算（请检查 cron 表达式）"
 
@@ -524,7 +533,11 @@ class TschedulePlugin(Star):
             kind = "单次" if t.run_once else "周期"
             schedule = t.run_at if t.run_once else t.cron_expr
             health = "正常" if not t.last_error else f"异常:{t.last_error}"
-            next_run = t.run_at if t.run_once else self._format_dt(self._next_cron_time(t.cron_expr, t.timezone_name))
+            next_run = (
+                t.run_at
+                if t.run_once
+                else self._format_dt(self._next_cron_time(t.cron_expr, t.timezone_name))
+            )
             lines.append(
                 f"#{t.task_id} [{kind}/{status}] {t.name} | {schedule} | TZ:{t.timezone_name} | 下次:{next_run or '未知'} | "
                 f"重试:{t.retry_times}/{t.retry_interval_seconds}s/{t.retry_strategy} | 错过:{t.missed_policy} | {health} | future:{future_status}"
@@ -555,7 +568,9 @@ class TschedulePlugin(Star):
         if not task or task.unified_msg_origin != event.unified_msg_origin:
             raise ValueError(f"[E_NOT_FOUND] 任务 #{task_id} 不存在")
 
-        ok = await self._execute_task(task, self._now_in_timezone(task.timezone_name), reason="manual")
+        ok = await self._execute_task(
+            task, self._now_in_timezone(task.timezone_name), reason="manual"
+        )
         await self._save_state()
         if ok:
             if task.run_once:
@@ -567,7 +582,6 @@ class TschedulePlugin(Star):
     async def _scheduler_loop(self):
         while True:
             changed = False
-            now = datetime.now()
 
             to_delete: list[int] = []
             for task in list(self.tasks.values()):
@@ -590,7 +604,9 @@ class TschedulePlugin(Star):
                         missed_seconds = int((task_now - run_at_dt).total_seconds())
                         if missed_seconds > 60 and task.missed_policy == "skip":
                             task.last_run_at = task_now.strftime("%Y-%m-%d %H:%M:%S")
-                            task.last_error = f"跳过执行：错过触发时间约 {missed_seconds // 60} 分钟"
+                            task.last_error = (
+                                f"跳过执行：错过触发时间约 {missed_seconds // 60} 分钟"
+                            )
                             task.last_run_minute = now_minute_key
                             to_delete.append(task.task_id)
                             changed = True
@@ -718,7 +734,9 @@ class TschedulePlugin(Star):
             )
             task.future_job_id = str(getattr(job, "job_id", "") or "")
         except Exception as e:
-            logger.warning("[tschedule] sync future task failed for #%s: %s", task.task_id, e)
+            logger.warning(
+                "[tschedule] sync future task failed for #%s: %s", task.task_id, e
+            )
 
     async def _delete_task_from_future_list(self, task: CronTask):
         cron_mgr = self._get_cron_manager()
@@ -728,7 +746,9 @@ class TschedulePlugin(Star):
             await cron_mgr.delete_job(task.future_job_id)
             task.future_job_id = ""
         except Exception as e:
-            logger.warning("[tschedule] delete future task failed for #%s: %s", task.task_id, e)
+            logger.warning(
+                "[tschedule] delete future task failed for #%s: %s", task.task_id, e
+            )
 
     async def _sync_all_tasks_to_future_list(self):
         cron_mgr = self._get_cron_manager()
@@ -779,7 +799,9 @@ class TschedulePlugin(Star):
             dt = datetime.strptime(value, "%Y-%m-%d %H:%M")
             return dt.replace(tzinfo=tz)
         except Exception as e:
-            raise ValueError("[E_PARAM] 执行时间格式错误，请使用 `YYYY-MM-DD HH:MM` 或 ISO datetime") from e
+            raise ValueError(
+                "[E_PARAM] 执行时间格式错误，请使用 `YYYY-MM-DD HH:MM` 或 ISO datetime"
+            ) from e
 
     def _validate_cron_expr(self, expr: str):
         fields = expr.split()
@@ -810,7 +832,9 @@ class TschedulePlugin(Star):
                 return False
         return True
 
-    def _parse_cron_field(self, field: str, min_v: int, max_v: int, field_label: str = "字段") -> set:
+    def _parse_cron_field(
+        self, field: str, min_v: int, max_v: int, field_label: str = "字段"
+    ) -> set:
         result = set()
         for part in field.split(","):
             part = part.strip()
@@ -825,7 +849,9 @@ class TschedulePlugin(Star):
                 base, step_str = part.split("/", 1)
                 step = self._safe_int(step_str, f"cron 步长 `{part}`")
                 if step <= 0:
-                    raise ValueError(f"[E_CRON] cron {field_label}步长必须大于 0：`{part}`")
+                    raise ValueError(
+                        f"[E_CRON] cron {field_label}步长必须大于 0：`{part}`"
+                    )
 
                 if base == "*":
                     start, end = min_v, max_v
@@ -837,10 +863,14 @@ class TschedulePlugin(Star):
                     start = self._safe_int(base, f"cron 字段 `{part}`")
                     end = max_v
 
-                self._check_range(start, min_v, max_v, f"cron {field_label}字段 `{part}`")
+                self._check_range(
+                    start, min_v, max_v, f"cron {field_label}字段 `{part}`"
+                )
                 self._check_range(end, min_v, max_v, f"cron {field_label}字段 `{part}`")
                 if start > end:
-                    raise ValueError(f"[E_CRON] cron {field_label}范围起始不能大于结束：`{part}`")
+                    raise ValueError(
+                        f"[E_CRON] cron {field_label}范围起始不能大于结束：`{part}`"
+                    )
 
                 result.update(range(start, end + 1, step))
                 continue
@@ -849,10 +879,14 @@ class TschedulePlugin(Star):
                 start_str, end_str = part.split("-", 1)
                 start = self._safe_int(start_str, f"cron 范围 `{part}`")
                 end = self._safe_int(end_str, f"cron 范围 `{part}`")
-                self._check_range(start, min_v, max_v, f"cron {field_label}范围 `{part}`")
+                self._check_range(
+                    start, min_v, max_v, f"cron {field_label}范围 `{part}`"
+                )
                 self._check_range(end, min_v, max_v, f"cron {field_label}范围 `{part}`")
                 if start > end:
-                    raise ValueError(f"[E_CRON] cron {field_label}范围起始不能大于结束：`{part}`")
+                    raise ValueError(
+                        f"[E_CRON] cron {field_label}范围起始不能大于结束：`{part}`"
+                    )
                 result.update(range(start, end + 1))
                 continue
 
@@ -935,7 +969,14 @@ class TschedulePlugin(Star):
             return ids
 
         # 兼容 AstrBot 不同版本/不同部署常见管理员键名。
-        for key in ("admins_id", "admin_ids", "admins", "superusers", "owners", "admin"):
+        for key in (
+            "admins_id",
+            "admin_ids",
+            "admins",
+            "superusers",
+            "owners",
+            "admin",
+        ):
             if key in global_cfg:
                 ids.update(self._extract_ids_from_value(global_cfg.get(key)))
 
@@ -943,7 +984,14 @@ class TschedulePlugin(Star):
         for nested_key in ("platform", "permissions", "security", "bot"):
             nested = global_cfg.get(nested_key)
             if isinstance(nested, dict):
-                for key in ("admins_id", "admin_ids", "admins", "superusers", "owners", "admin"):
+                for key in (
+                    "admins_id",
+                    "admin_ids",
+                    "admins",
+                    "superusers",
+                    "owners",
+                    "admin",
+                ):
                     if key in nested:
                         ids.update(self._extract_ids_from_value(nested.get(key)))
 
@@ -1020,11 +1068,15 @@ class TschedulePlugin(Star):
                 if bool(getattr(sender, key, False)):
                     return True
 
-        admin_keywords = [self._normalize_admin_text(x) for x in self._admin_ids() if str(x).strip()]
+        admin_keywords = [
+            self._normalize_admin_text(x) for x in self._admin_ids() if str(x).strip()
+        ]
         if not admin_keywords:
             return False
 
-        candidates = [self._normalize_admin_text(x) for x in self._admin_match_candidates(event)]
+        candidates = [
+            self._normalize_admin_text(x) for x in self._admin_match_candidates(event)
+        ]
         for keyword in admin_keywords:
             if not keyword:
                 continue
@@ -1053,15 +1105,22 @@ class TschedulePlugin(Star):
         return max(1, v)
 
     def _default_retry_strategy(self) -> str:
-        return self._normalize_retry_strategy(self._config_get("default_retry_strategy", "fixed"))
+        return self._normalize_retry_strategy(
+            self._config_get("default_retry_strategy", "fixed")
+        )
 
     def _default_timezone(self) -> str:
-        tz = str(self._config_get("default_timezone", "Asia/Shanghai")).strip() or "Asia/Shanghai"
+        tz = (
+            str(self._config_get("default_timezone", "Asia/Shanghai")).strip()
+            or "Asia/Shanghai"
+        )
         self._resolve_timezone(tz)
         return tz
 
     def _default_missed_policy(self) -> str:
-        return self._normalize_missed_policy(self._config_get("default_missed_policy", "catch_up"))
+        return self._normalize_missed_policy(
+            self._config_get("default_missed_policy", "catch_up")
+        )
 
     def _session_task_limit(self) -> int:
         v = self._config_get("session_task_limit", 50)
@@ -1102,17 +1161,23 @@ class TschedulePlugin(Star):
         try:
             return ZoneInfo(str(timezone_name).strip())
         except Exception as e:
-            raise ValueError(f"[E_PARAM] 时区无效：`{timezone_name}`，例如 `Asia/Shanghai`") from e
+            raise ValueError(
+                f"[E_PARAM] 时区无效：`{timezone_name}`，例如 `Asia/Shanghai`"
+            ) from e
 
     def _now_in_timezone(self, timezone_name: str) -> datetime:
         return datetime.now(self._resolve_timezone(timezone_name))
 
-    def _parse_task_options(self, raw_parts: list[str], for_update: bool = False) -> Dict[str, Any]:
+    def _parse_task_options(
+        self, raw_parts: list[str], for_update: bool = False
+    ) -> Dict[str, Any]:
         retry_times = None if for_update else self._default_retry_times()
         timezone_name = None if for_update else self._default_timezone()
         missed_policy = None if for_update else self._default_missed_policy()
         retry_strategy = None if for_update else self._default_retry_strategy()
-        retry_interval_seconds = None if for_update else self._default_retry_interval_seconds()
+        retry_interval_seconds = (
+            None if for_update else self._default_retry_interval_seconds()
+        )
 
         pending_tokens = []
         for token in raw_parts:
@@ -1146,7 +1211,15 @@ class TschedulePlugin(Star):
                     retry_times = rv
                     continue
                 lowered = value.lower()
-                if lowered in {"catch_up", "catchup", "补执行", "补跑", "补偿", "skip", "跳过"}:
+                if lowered in {
+                    "catch_up",
+                    "catchup",
+                    "补执行",
+                    "补跑",
+                    "补偿",
+                    "skip",
+                    "跳过",
+                }:
                     missed_policy = self._normalize_missed_policy(value)
                     continue
                 if lowered in {"fixed", "固定", "exponential", "指数", "指数退避"}:
@@ -1176,7 +1249,12 @@ class TschedulePlugin(Star):
                 retry_strategy = self._normalize_retry_strategy(value)
                 continue
 
-            if key in {"retry_interval", "retry_interval_seconds", "重试间隔", "重试间隔秒"}:
+            if key in {
+                "retry_interval",
+                "retry_interval_seconds",
+                "重试间隔",
+                "重试间隔秒",
+            }:
                 iv = self._safe_int(value, "重试间隔秒数")
                 if iv <= 0:
                     raise ValueError("[E_PARAM] 重试间隔秒数必须大于 0")
@@ -1194,7 +1272,9 @@ class TschedulePlugin(Star):
         }
 
     def _check_session_task_limit(self, unified_msg_origin: str):
-        count = sum(1 for t in self.tasks.values() if t.unified_msg_origin == unified_msg_origin)
+        count = sum(
+            1 for t in self.tasks.values() if t.unified_msg_origin == unified_msg_origin
+        )
         limit = self._session_task_limit()
         if count >= limit:
             raise ValueError(f"[E_LIMIT] 当前会话任务数已达上限（{limit}）")
@@ -1224,13 +1304,19 @@ class TschedulePlugin(Star):
             if task.timezone_name != timezone_name:
                 continue
             if run_once and task.run_at == run_at:
-                raise ValueError("[E_DUPLICATE] 检测到重复单次提醒（同会话/同名称/同时间/同内容）")
+                raise ValueError(
+                    "[E_DUPLICATE] 检测到重复单次提醒（同会话/同名称/同时间/同内容）"
+                )
             if (not run_once) and task.cron_expr == cron_expr:
-                raise ValueError("[E_DUPLICATE] 检测到重复 cron 任务（同会话/同表达式/同内容）")
+                raise ValueError(
+                    "[E_DUPLICATE] 检测到重复 cron 任务（同会话/同表达式/同内容）"
+                )
 
     def _next_cron_time(self, expr: str, timezone_name: str) -> Optional[datetime]:
         tz = self._resolve_timezone(timezone_name)
-        cursor = datetime.now(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
+        cursor = datetime.now(tz).replace(second=0, microsecond=0) + timedelta(
+            minutes=1
+        )
         for _ in range(0, 366 * 24 * 60):
             if self._cron_match(expr, cursor):
                 return cursor
@@ -1347,7 +1433,9 @@ class TschedulePlugin(Star):
         # 兼容历史本地文件名（collect_skill）
         if cron_data is None and self._legacy_local_store_path_v2.exists():
             try:
-                obj = json.loads(self._legacy_local_store_path_v2.read_text(encoding="utf-8"))
+                obj = json.loads(
+                    self._legacy_local_store_path_v2.read_text(encoding="utf-8")
+                )
                 cron_data = obj.get("cron_tasks", [])
                 self.next_task_id = int(obj.get("cron_next_id", 1))
             except Exception as e:
@@ -1355,7 +1443,9 @@ class TschedulePlugin(Star):
 
         if cron_data is None and self._legacy_local_store_path.exists():
             try:
-                obj = json.loads(self._legacy_local_store_path.read_text(encoding="utf-8"))
+                obj = json.loads(
+                    self._legacy_local_store_path.read_text(encoding="utf-8")
+                )
                 cron_data = obj.get("tasks", [])
                 self.next_task_id = int(obj.get("next_id", 1))
                 migrated_from_v1 = True
@@ -1365,7 +1455,9 @@ class TschedulePlugin(Star):
         cron_data = cron_data or []
 
         self.tasks = self._deserialize_cron_tasks(cron_data)
-        self.next_task_id = max(self.next_task_id, max(self.tasks.keys(), default=0) + 1)
+        self.next_task_id = max(
+            self.next_task_id, max(self.tasks.keys(), default=0) + 1
+        )
 
         if migrated_from_v1:
             logger.info("[tschedule] detected v1 data, writing migrated v2 store")
@@ -1388,7 +1480,9 @@ class TschedulePlugin(Star):
                     enabled=bool(item.get("enabled", True)),
                     retry_times=max(0, int(item.get("retry_times", 0))),
                     retry_strategy=str(item.get("retry_strategy", "fixed")),
-                    retry_interval_seconds=max(1, int(item.get("retry_interval_seconds", 2))),
+                    retry_interval_seconds=max(
+                        1, int(item.get("retry_interval_seconds", 2))
+                    ),
                     missed_policy=str(item.get("missed_policy", "catch_up")),
                     last_run_minute=str(item.get("last_run_minute", "")),
                     last_check_at=str(item.get("last_check_at", "")),
@@ -1397,14 +1491,23 @@ class TschedulePlugin(Star):
                     future_job_id=str(item.get("future_job_id", "")),
                 )
                 try:
-                    task.retry_strategy = self._normalize_retry_strategy(task.retry_strategy)
+                    task.retry_strategy = self._normalize_retry_strategy(
+                        task.retry_strategy
+                    )
                 except Exception:
                     task.retry_strategy = "fixed"
                 try:
-                    task.missed_policy = self._normalize_missed_policy(task.missed_policy)
+                    task.missed_policy = self._normalize_missed_policy(
+                        task.missed_policy
+                    )
                 except Exception:
                     task.missed_policy = "catch_up"
-                if task.task_id > 0 and task.name and task.reminder and task.unified_msg_origin:
+                if (
+                    task.task_id > 0
+                    and task.name
+                    and task.reminder
+                    and task.unified_msg_origin
+                ):
                     if task.run_once:
                         if task.run_at:
                             tasks[task.task_id] = task
@@ -1412,7 +1515,9 @@ class TschedulePlugin(Star):
                         if task.cron_expr:
                             tasks[task.task_id] = task
             except Exception as e:
-                logger.warning("[tschedule] skip invalid cron task item: %s err=%s", item, e)
+                logger.warning(
+                    "[tschedule] skip invalid cron task item: %s err=%s", item, e
+                )
         return tasks
 
     async def _save_state(self):
