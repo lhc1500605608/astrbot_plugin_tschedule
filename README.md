@@ -1,15 +1,22 @@
 # astrbot-plugin-collect-skill
 
-AstrBot 技能插件（当前版本 `v2.0.3`），当前聚焦在 `cron`：
+一个面向 AstrBot 的提醒调度插件，当前版本 `v2.0.3`，聚焦 `cron + 单次提醒`。
 
-- 周期 cron 任务管理（创建/修改/删除/启停/列表）
-- 单次提醒（原 todo 能力已并入 cron）
-- 与 AstrBot future task 自动同步（创建/修改/删除/启停）
-- 提供 LLM 工具，由主助手自行识别自然语言并调用
+## 功能概览
 
-## 1. 命令用法（统一为 /cron）
+- 周期任务：支持创建、修改、删除、启用、禁用、列表、立即执行、日志查询
+- 单次提醒：已并入 `/cron` 命令（原 `todo` 能力）
+- 主动能力同步：任务会同步到 AstrBot future task 列表
+- LLM 工具支持：可由主助手识别自然语言后调用工具创建任务
 
-- `/cron 帮助`
+## 安装与使用
+
+1. 将本插件放入 AstrBot 插件目录并启用。  
+2. 在会话中使用 `/cron 帮助` 查看指令。  
+3. 如需自然语言创建提醒，建议给主助手配置本仓库的 [SYSTEM_PROMPT_TEMPLATE.md](/Users/shangtang/Documents/代码/astrbot_plugin_collect_skill/SYSTEM_PROMPT_TEMPLATE.md)。
+
+## 命令说明
+
 - `/cron 添加 任务名 | */5 * * * * | 提醒内容`
 - `/cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容`
 - `/cron 修改 任务ID | 新任务名 | 新cron表达式 | 新提醒内容`
@@ -22,33 +29,35 @@ AstrBot 技能插件（当前版本 `v2.0.3`），当前聚焦在 `cron`：
 - `/cron 立即执行 任务ID`
 
 说明：
-- 原 `/todo`、`/skill` 已移除
-- 单次时间支持：`YYYY-MM-DD HH:MM` 或 ISO datetime
+- 单次时间支持 `YYYY-MM-DD HH:MM` 或 ISO datetime。  
+- 本版本不再提供 `/todo`、`/skill` 命令。  
 
-## 2. 自然语言策略
+## LLM 工具接口
 
-插件不再直接做自然语言时间解析。  
-自然语言交给主助手判断，再调用以下 LLM 工具：
+给主助手调用的工具如下：
 
-- `create_cron_task`：创建周期任务
-- `create_once_reminder`：创建单次提醒
-- `list_cron_tasks`：查询当前会话任务
-- `delete_cron_task`：删除任务
+- `create_cron_task(name, cron_expression, reminder)`
+- `create_once_reminder(name, run_at, reminder)`
+- `list_cron_tasks()`
+- `delete_cron_task(task_id)`
 
-## 3. 版本策略
+推荐策略：主助手负责自然语言理解与时间解析，插件负责执行与调度。
 
-- 单个任务完成：只提升小版本（`x.y.z` 的 `z`）
-- 完整阶段收束：再考虑提升大版本（`x.y`）
+## 版本策略
+
+- 单个任务完成：仅提升小版本（`x.y.z` 的 `z`）
+- 完整阶段收束：再提升中/大版本（`x.y` / `x`）
 
 版本记录：
 - `v1.0.0`：基础 cron 管理
 - `v2.0.0`：cron 增强 + todo + skill + 审计
 - `v2.0.1`：自然语言提醒解析
 - `v2.0.2`：cron 与 future task 同步
-- `v2.0.3`：移除 todo/skill/审计，统一 cron，新增 LLM 工具入口
+- `v2.0.3`：移除 todo/skill/审计，统一 cron，改为主助手调用工具
 
 ## 参考
 
 - [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
 - [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
 - [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+
