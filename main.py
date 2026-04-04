@@ -48,8 +48,8 @@ class CronTask:
     future_job_id: str = ""
 
 
-@register("collect_skill", "Tango", "AstrBot 技能汇总（v2.1.0: cron reliability）", "2.1.0")
-class CollectSkillPlugin(Star):
+@register("tschedule", "Tango", "Astrbot计划任务提醒（v2.1.1）", "2.1.1")
+class TschedulePlugin(Star):
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
         self.plugin_config = config
@@ -57,14 +57,15 @@ class CollectSkillPlugin(Star):
         self.next_task_id: int = 1
 
         self._scheduler_task: Optional[asyncio.Task] = None
-        self._local_store_path = Path(__file__).resolve().parent / ".collect_skill_store_v2.json"
+        self._local_store_path = Path(__file__).resolve().parent / ".tschedule_store_v2.json"
+        self._legacy_local_store_path_v2 = Path(__file__).resolve().parent / ".collect_skill_store_v2.json"
         self._legacy_local_store_path = Path(__file__).resolve().parent / ".cron_tasks_v1.json"
 
     async def initialize(self):
         await self._load_state()
         await self._sync_all_tasks_to_future_list()
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
-        logger.info("[collect_skill] scheduler started, cron=%s", len(self.tasks))
+        logger.info("[tschedule] scheduler started, cron=%s", len(self.tasks))
 
     async def terminate(self):
         if self._scheduler_task:
@@ -185,7 +186,7 @@ class CollectSkillPlugin(Star):
             if resp:
                 yield event.plain_result(resp)
         except Exception as e:
-            logger.exception("[collect_skill] /cron command failed: %s", e)
+            logger.exception("[tschedule] /cron command failed: %s", e)
             yield event.plain_result(self._friendly_error(e))
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -203,7 +204,7 @@ class CollectSkillPlugin(Star):
             if resp:
                 yield event.plain_result(resp)
         except Exception as e:
-            logger.exception("[collect_skill] keyword command failed: %s", e)
+            logger.exception("[tschedule] keyword command failed: %s", e)
             yield event.plain_result(self._friendly_error(e))
 
     # ---------- cron skill ----------
@@ -673,7 +674,7 @@ class CollectSkillPlugin(Star):
             "retry_interval_seconds": task.retry_interval_seconds,
             "missed_policy": task.missed_policy,
             "origin": "plugin",
-            "plugin": "collect_skill",
+            "plugin": "tschedule",
             "plugin_task_id": task.task_id,
             "run_at": task.run_at if task.run_once else None,
         }
@@ -717,7 +718,7 @@ class CollectSkillPlugin(Star):
             )
             task.future_job_id = str(getattr(job, "job_id", "") or "")
         except Exception as e:
-            logger.warning("[collect_skill] sync future task failed for #%s: %s", task.task_id, e)
+            logger.warning("[tschedule] sync future task failed for #%s: %s", task.task_id, e)
 
     async def _delete_task_from_future_list(self, task: CronTask):
         cron_mgr = self._get_cron_manager()
@@ -727,7 +728,7 @@ class CollectSkillPlugin(Star):
             await cron_mgr.delete_job(task.future_job_id)
             task.future_job_id = ""
         except Exception as e:
-            logger.warning("[collect_skill] delete future task failed for #%s: %s", task.task_id, e)
+            logger.warning("[tschedule] delete future task failed for #%s: %s", task.task_id, e)
 
     async def _sync_all_tasks_to_future_list(self):
         cron_mgr = self._get_cron_manager()
@@ -1341,7 +1342,16 @@ class CollectSkillPlugin(Star):
                 cron_data = obj.get("cron_tasks", [])
                 self.next_task_id = int(obj.get("cron_next_id", 1))
             except Exception as e:
-                logger.exception("[collect_skill] load local state failed: %s", e)
+                logger.exception("[tschedule] load local state failed: %s", e)
+
+        # 兼容历史本地文件名（collect_skill）
+        if cron_data is None and self._legacy_local_store_path_v2.exists():
+            try:
+                obj = json.loads(self._legacy_local_store_path_v2.read_text(encoding="utf-8"))
+                cron_data = obj.get("cron_tasks", [])
+                self.next_task_id = int(obj.get("cron_next_id", 1))
+            except Exception as e:
+                logger.exception("[tschedule] load legacy v2 local state failed: %s", e)
 
         if cron_data is None and self._legacy_local_store_path.exists():
             try:
@@ -1350,7 +1360,7 @@ class CollectSkillPlugin(Star):
                 self.next_task_id = int(obj.get("next_id", 1))
                 migrated_from_v1 = True
             except Exception as e:
-                logger.exception("[collect_skill] load local v1 state failed: %s", e)
+                logger.exception("[tschedule] load local v1 state failed: %s", e)
 
         cron_data = cron_data or []
 
@@ -1358,7 +1368,7 @@ class CollectSkillPlugin(Star):
         self.next_task_id = max(self.next_task_id, max(self.tasks.keys(), default=0) + 1)
 
         if migrated_from_v1:
-            logger.info("[collect_skill] detected v1 data, writing migrated v2 store")
+            logger.info("[tschedule] detected v1 data, writing migrated v2 store")
             await self._save_state()
 
     def _deserialize_cron_tasks(self, data: list) -> Dict[int, CronTask]:
@@ -1402,7 +1412,7 @@ class CollectSkillPlugin(Star):
                         if task.cron_expr:
                             tasks[task.task_id] = task
             except Exception as e:
-                logger.warning("[collect_skill] skip invalid cron task item: %s err=%s", item, e)
+                logger.warning("[tschedule] skip invalid cron task item: %s err=%s", item, e)
         return tasks
 
     async def _save_state(self):

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## v2.1.1 - 2026-04-04
+
+### Changed
+- Renamed plugin package to `astrbot_plugin_tschedule`.
+- Updated display name to `Astrbot计划任务提醒`.
+- Updated plugin register id to `tschedule` and plugin payload tag to `tschedule`.
+- Renamed local fallback store file to `.tschedule_store_v2.json`.
+
+### Compatibility
+- Kept compatibility with old local store file `.collect_skill_store_v2.json` for seamless migration.
+
 ## v2.1.0 - 2026-04-04
 
 ### Added

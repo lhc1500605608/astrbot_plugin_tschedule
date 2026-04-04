@@ -1,6 +1,6 @@
-name: astrbot_plugin_collect_skill
-display_name: "Astrbot 技能汇总"
-desc: AstrBot 复合技能插件（v2.1.0：cron 稳定性/时区/去重/会话上限增强）。
-version: v2.1.0
+name: astrbot_plugin_tschedule
+display_name: "Astrbot计划任务提醒"
+desc: AstrBot 计划任务提醒插件（v2.1.1：插件重命名，聚焦计划任务能力）。
+version: v2.1.1
 author: Tango
 repo: https://github.com/lhc1500605608/astrbot_plugin_collect_skill

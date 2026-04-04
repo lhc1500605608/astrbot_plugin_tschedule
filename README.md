@@ -1,6 +1,6 @@
-# astrbot-plugin-collect-skill
+# astrbot-plugin-tschedule
 
-一个面向 AstrBot 的提醒调度插件，当前版本 `v2.1.0`，聚焦 `cron + 单次提醒`。
+一个面向 AstrBot 的计划任务提醒插件，当前版本 `v2.1.1`，聚焦 `cron + 单次提醒`。
 
 ## 功能概览
 
@@ -18,7 +18,7 @@
 
 1. 将本插件放入 AstrBot 插件目录并启用。  
 2. 在会话中使用 `/cron 帮助` 查看指令。  
-3. 如需自然语言创建提醒，建议给主助手配置本仓库的 [SYSTEM_PROMPT_TEMPLATE.md](/Users/shangtang/Documents/代码/astrbot_plugin_collect_skill/SYSTEM_PROMPT_TEMPLATE.md)。
+3. 如需自然语言创建提醒，建议给主助手配置本仓库的 [SYSTEM_PROMPT_TEMPLATE.md](./SYSTEM_PROMPT_TEMPLATE.md)。
 
 ## 命令说明（统一 /cron）
 
