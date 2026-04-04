@@ -585,6 +585,7 @@ class CollectSkillPlugin(Star):
                         continue
                     run_at_dt = self._parse_run_at(task.run_at, task.timezone_name)
                     if task_now >= run_at_dt:
+                        # 单次任务在服务短暂停机后可能错过触发点，这里按 missed_policy 决定补执行或跳过。
                         missed_seconds = int((task_now - run_at_dt).total_seconds())
                         if missed_seconds > 60 and task.missed_policy == "skip":
                             task.last_run_at = task_now.strftime("%Y-%m-%d %H:%M:%S")
@@ -610,6 +611,7 @@ class CollectSkillPlugin(Star):
                     and task.missed_policy == "catch_up"
                     and self._has_missed_cron_between(task, task_now)
                 ):
+                    # 周期任务补偿：若上次检查到本次检查之间存在命中点，则补执行一次。
                     should_run = True
 
                 if should_run:
@@ -931,11 +933,12 @@ class CollectSkillPlugin(Star):
         if not isinstance(global_cfg, dict):
             return ids
 
+        # 兼容 AstrBot 不同版本/不同部署常见管理员键名。
         for key in ("admins_id", "admin_ids", "admins", "superusers", "owners", "admin"):
             if key in global_cfg:
                 ids.update(self._extract_ids_from_value(global_cfg.get(key)))
 
-        # 一些配置会把管理员放在嵌套节点里
+        # 一些部署会把权限配置放在嵌套节点中。
         for nested_key in ("platform", "permissions", "security", "bot"):
             nested = global_cfg.get(nested_key)
             if isinstance(nested, dict):
@@ -958,6 +961,7 @@ class CollectSkillPlugin(Star):
             return ids
 
         if isinstance(value, dict):
+            # 尽量从结构化对象中提取可识别身份字段。
             for k in ("id", "uid", "user_id", "value", "name", "username"):
                 v = value.get(k)
                 if v is not None:
@@ -969,6 +973,7 @@ class CollectSkillPlugin(Star):
         text = str(value).strip()
         if not text:
             return ids
+        # 兼容 "id1,id2" / "id1 id2" / "id1|id2" 等文本输入。
         for token in re.split(r"[,\s;|]+", text):
             s = token.strip()
             if s:
@@ -1118,6 +1123,7 @@ class CollectSkillPlugin(Star):
             pending_tokens.append(t)
 
         for token in pending_tokens:
+            # 支持 key=value / key:value / key：value 三种写法，降低命令输入门槛。
             if "=" in token:
                 key, value = token.split("=", 1)
             elif "：" in token:
@@ -1131,6 +1137,7 @@ class CollectSkillPlugin(Star):
             value = value.strip()
 
             if not key:
+                # 兼容旧格式：第 4 段直接写数字时视作 retry_times。
                 if re.fullmatch(r"-?\d+", value):
                     rv = self._safe_int(value, "重试次数")
                     if rv < 0:
