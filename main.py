@@ -215,23 +215,35 @@ class TschedulePlugin(Star):
         return await self._delete_task(tid)
 
     # ---------- 命令入口 ----------
-    @filter.command("cron", alias={"定时", "cron任务", "提醒"})
+    @filter.command("cron", alias={"定时", "cron任务", "提醒"}, priority=999)
     async def cron_command(self, event: AstrMessageEvent):
         raw = event.message_str.strip()
         body = self._extract_cmd_body(raw)
         if not body or body in {"help", "帮助", "?", "-h", "--help"}:
             yield event.plain_result(self._cron_help_text())
+            if hasattr(event, "should_call_llm"):
+                event.should_call_llm(False)
+            if hasattr(event, "stop_event"):
+                event.stop_event()
             return
 
         try:
             resp = await self._handle_cron_text(body, event)
             if resp:
                 yield event.plain_result(resp)
+                if hasattr(event, "should_call_llm"):
+                    event.should_call_llm(False)
+                if hasattr(event, "stop_event"):
+                    event.stop_event()
         except Exception as e:
             logger.exception("[tschedule] /cron command failed: %s", e)
             yield event.plain_result(self._friendly_error(e))
+            if hasattr(event, "should_call_llm"):
+                event.should_call_llm(False)
+            if hasattr(event, "stop_event"):
+                event.stop_event()
 
-    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=999)
     async def keyword_command_router(self, event: AstrMessageEvent):
         text = event.message_str.strip()
         if not text or text.startswith("/"):
@@ -245,9 +257,17 @@ class TschedulePlugin(Star):
             resp = await self._handle_cron_text(text, event)
             if resp:
                 yield event.plain_result(resp)
+                if hasattr(event, "should_call_llm"):
+                    event.should_call_llm(False)
+                if hasattr(event, "stop_event"):
+                    event.stop_event()
         except Exception as e:
             logger.exception("[tschedule] keyword command failed: %s", e)
             yield event.plain_result(self._friendly_error(e))
+            if hasattr(event, "should_call_llm"):
+                event.should_call_llm(False)
+            if hasattr(event, "stop_event"):
+                event.stop_event()
 
     # ---------- cron skill ----------
     async def _handle_cron_text(self, body: str, event: AstrMessageEvent) -> str:
