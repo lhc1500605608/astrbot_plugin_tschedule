@@ -1,5 +1,7 @@
 # Astrbot计划任务提醒
 
+中文 | [English](./README_EN.md)
+
 `Astrbot计划任务提醒` 是一个面向 AstrBot 的计划任务插件，专注于稳定、可治理的提醒调度能力。
 
 ## 特性

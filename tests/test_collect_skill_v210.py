@@ -1,6 +1,8 @@
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 
 
 def _install_astrbot_stubs():
@@ -68,17 +70,20 @@ def _install_astrbot_stubs():
 
 
 _install_astrbot_stubs()
-from main import CollectSkillPlugin
+from main import TschedulePlugin
 
 
 class DummyContext:
+    def __init__(self, data_path=None):
+        self.data_path = data_path
+
     def get_config(self):
         return {}
 
 
 class TestCollectSkillV210(unittest.TestCase):
     def setUp(self):
-        self.plugin = CollectSkillPlugin(DummyContext(), config={})
+        self.plugin = TschedulePlugin(DummyContext(), config={})
         self.plugin.tasks = {}
 
     def test_validate_cron_expr_error_has_field_name(self):
@@ -88,7 +93,13 @@ class TestCollectSkillV210(unittest.TestCase):
 
     def test_parse_task_options(self):
         opts = self.plugin._parse_task_options(
-            ["2", "tz=Asia/Shanghai", "miss=skip", "retry_strategy=exponential", "retry_interval=7"]
+            [
+                "2",
+                "tz=Asia/Shanghai",
+                "miss=skip",
+                "retry_strategy=exponential",
+                "retry_interval=7",
+            ]
         )
         self.assertEqual(opts["retry_times"], 2)
         self.assertEqual(opts["timezone_name"], "Asia/Shanghai")
@@ -99,6 +110,16 @@ class TestCollectSkillV210(unittest.TestCase):
     def test_next_cron_time(self):
         next_dt = self.plugin._next_cron_time("*/5 * * * *", "Asia/Shanghai")
         self.assertIsNotNone(next_dt)
+
+    def test_store_file_under_data_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin = TschedulePlugin(DummyContext(data_path=tmpdir), config={})
+            self.assertTrue(str(plugin._local_store_path).startswith(tmpdir))
+            self.assertEqual(plugin._local_store_path.name, "tschedule_store_v2.json")
+            self.assertEqual(
+                plugin._local_store_path.parent,
+                Path(tmpdir) / "astrbot_plugin_tschedule",
+            )
 
 
 if __name__ == "__main__":

@@ -56,15 +56,52 @@ class TschedulePlugin(Star):
         self.next_task_id: int = 1
 
         self._scheduler_task: Optional[asyncio.Task] = None
-        self._local_store_path = (
-            Path(__file__).resolve().parent / ".tschedule_store_v2.json"
-        )
-        self._legacy_local_store_path_v2 = (
-            Path(__file__).resolve().parent / ".collect_skill_store_v2.json"
-        )
-        self._legacy_local_store_path = (
-            Path(__file__).resolve().parent / ".cron_tasks_v1.json"
-        )
+        (
+            self._local_store_path,
+            self._legacy_local_store_path_v2,
+            self._legacy_local_store_path,
+        ) = self._build_store_paths()
+
+    def _build_store_paths(self) -> tuple[Path, Path, Path]:
+        """
+        持久化优先写入 data 目录，避免插件更新/重装时数据被覆盖。
+        同时保留历史路径读取能力，保证平滑迁移。
+        """
+        plugin_root = Path(__file__).resolve().parent
+        data_base_candidates: list[Path] = []
+
+        for attr in ("data_path", "data_dir"):
+            value = getattr(self.context, attr, None)
+            if value:
+                data_base_candidates.append(Path(str(value)))
+
+        get_data_dir = getattr(self.context, "get_data_dir", None)
+        if callable(get_data_dir):
+            try:
+                value = get_data_dir()
+                if value:
+                    data_base_candidates.append(Path(str(value)))
+            except Exception:
+                pass
+
+        # 最后兜底到进程工作目录下 data。
+        data_base_candidates.append(Path.cwd() / "data")
+
+        data_dir = plugin_root / "data"
+        for candidate in data_base_candidates:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                data_dir = candidate / "astrbot_plugin_tschedule"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                break
+            except Exception:
+                continue
+
+        # 优先新路径，旧路径只用于读取迁移。
+        local_store_path = data_dir / "tschedule_store_v2.json"
+        legacy_local_store_path_v2 = plugin_root / ".collect_skill_store_v2.json"
+        legacy_local_store_path = plugin_root / ".cron_tasks_v1.json"
+        return local_store_path, legacy_local_store_path_v2, legacy_local_store_path
 
     async def initialize(self):
         await self._load_state()
@@ -581,75 +618,81 @@ class TschedulePlugin(Star):
 
     async def _scheduler_loop(self):
         while True:
-            changed = False
+            try:
+                changed = False
 
-            to_delete: list[int] = []
-            for task in list(self.tasks.values()):
-                if not task.enabled:
-                    continue
+                to_delete: list[int] = []
+                for task in list(self.tasks.values()):
+                    if not task.enabled:
+                        continue
 
-                # 已同步到 AstrBot Future Task，由平台侧调度，避免双重提醒。
-                if task.future_job_id and self._get_cron_manager() is not None:
-                    continue
+                    # 已同步到 AstrBot Future Task，由平台侧调度，避免双重提醒。
+                    if task.future_job_id and self._get_cron_manager() is not None:
+                        continue
 
-                task_now = self._now_in_timezone(task.timezone_name)
-                now_minute_key = task_now.strftime("%Y-%m-%d %H:%M")
+                    task_now = self._now_in_timezone(task.timezone_name)
+                    now_minute_key = task_now.strftime("%Y-%m-%d %H:%M")
 
-                if task.run_once:
+                    if task.run_once:
+                        if task.last_run_minute == now_minute_key:
+                            continue
+                        run_at_dt = self._parse_run_at(task.run_at, task.timezone_name)
+                        if task_now >= run_at_dt:
+                            # 单次任务在服务短暂停机后可能错过触发点，这里按 missed_policy 决定补执行或跳过。
+                            missed_seconds = int((task_now - run_at_dt).total_seconds())
+                            if missed_seconds > 60 and task.missed_policy == "skip":
+                                task.last_run_at = task_now.strftime(
+                                    "%Y-%m-%d %H:%M:%S"
+                                )
+                                task.last_error = f"跳过执行：错过触发时间约 {missed_seconds // 60} 分钟"
+                                task.last_run_minute = now_minute_key
+                                to_delete.append(task.task_id)
+                                changed = True
+                                continue
+
+                            ok = await self._execute_task(task, task_now, reason="once")
+                            task.last_run_minute = now_minute_key
+                            changed = True
+                            if ok:
+                                to_delete.append(task.task_id)
+                        continue
+
                     if task.last_run_minute == now_minute_key:
                         continue
-                    run_at_dt = self._parse_run_at(task.run_at, task.timezone_name)
-                    if task_now >= run_at_dt:
-                        # 单次任务在服务短暂停机后可能错过触发点，这里按 missed_policy 决定补执行或跳过。
-                        missed_seconds = int((task_now - run_at_dt).total_seconds())
-                        if missed_seconds > 60 and task.missed_policy == "skip":
-                            task.last_run_at = task_now.strftime("%Y-%m-%d %H:%M:%S")
-                            task.last_error = (
-                                f"跳过执行：错过触发时间约 {missed_seconds // 60} 分钟"
-                            )
-                            task.last_run_minute = now_minute_key
-                            to_delete.append(task.task_id)
-                            changed = True
-                            continue
 
-                        ok = await self._execute_task(task, task_now, reason="once")
+                    should_run = self._cron_match(task.cron_expr, task_now)
+                    if (
+                        not should_run
+                        and task.missed_policy == "catch_up"
+                        and self._has_missed_cron_between(task, task_now)
+                    ):
+                        # 周期任务补偿：若上次检查到本次检查之间存在命中点，则补执行一次。
+                        should_run = True
+
+                    if should_run:
+                        ok = await self._execute_task(task, task_now, reason="cron")
                         task.last_run_minute = now_minute_key
+                        if not ok and not task.last_error:
+                            task.last_error = "执行失败"
                         changed = True
-                        if ok:
-                            to_delete.append(task.task_id)
-                    continue
 
-                if task.last_run_minute == now_minute_key:
-                    continue
+                    check_key = task_now.strftime("%Y-%m-%d %H:%M")
+                    if task.last_check_at != check_key:
+                        task.last_check_at = check_key
+                        changed = True
 
-                should_run = self._cron_match(task.cron_expr, task_now)
-                if (
-                    not should_run
-                    and task.missed_policy == "catch_up"
-                    and self._has_missed_cron_between(task, task_now)
-                ):
-                    # 周期任务补偿：若上次检查到本次检查之间存在命中点，则补执行一次。
-                    should_run = True
+                for task_id in to_delete:
+                    if task_id in self.tasks:
+                        del self.tasks[task_id]
+                        changed = True
 
-                if should_run:
-                    ok = await self._execute_task(task, task_now, reason="cron")
-                    task.last_run_minute = now_minute_key
-                    if not ok and not task.last_error:
-                        task.last_error = "执行失败"
-                    changed = True
-
-                check_key = task_now.strftime("%Y-%m-%d %H:%M")
-                if task.last_check_at != check_key:
-                    task.last_check_at = check_key
-                    changed = True
-
-            for task_id in to_delete:
-                if task_id in self.tasks:
-                    del self.tasks[task_id]
-                    changed = True
-
-            if changed:
-                await self._save_state()
+                if changed:
+                    await self._save_state()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # 调度层兜底，确保单次异常不会导致整个调度任务退出。
+                logger.exception("[tschedule] scheduler loop error: %s", e)
 
             await asyncio.sleep(20)
 
