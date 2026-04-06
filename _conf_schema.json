@@ -51,5 +51,15 @@
     "type": "int",
     "description": "补执行扫描窗口（分钟）",
     "default": 180
+  },
+  "execution_timeout_seconds": {
+    "type": "int",
+    "description": "单次任务发送超时秒数",
+    "default": 30
+  },
+  "auto_disable_after_failures": {
+    "type": "int",
+    "description": "连续失败达到阈值后自动禁用任务（0 表示关闭）",
+    "default": 0
   }
 }

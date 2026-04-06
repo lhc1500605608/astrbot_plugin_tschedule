@@ -9,6 +9,7 @@
 - Unified `/cron` command for recurring and one-time reminders
 - Create, update, delete, enable/disable, run-now, list, and log operations
 - Retry controls: retry count, retry strategy, retry interval
+- Execution timeout and auto-disable threshold for repeated failures
 - Timezone support and missed-trigger policy (`catch_up` / `skip`)
 - Admin control, duplicate task detection, session task limit
 - Future-task synchronization with AstrBot
@@ -24,7 +25,8 @@
 - `/cron 添加 Morning Brief | 0 9 * * * | Check today's plan`
 - `/cron 单次 Meeting Reminder | 2026-04-05 09:30 | Meeting starts in 10 minutes`
 - `/cron 列表`
-- `/cron 日志 1`
+- `/cron 列表 enabled error page=1 size=10 keyword=daily`
+- `/cron 日志 1 20`
 - `/cron 立即执行 1`
 
 ## Optional Parameters
@@ -37,12 +39,19 @@ You can append optional parameters when creating/updating tasks:
 - `retry_strategy=fixed|exponential`: retry strategy
 - `retry_interval=5`: retry interval in seconds
 
+## List & Log Enhancements
+
+- `/cron 列表` supports filters and paging: `enabled|disabled`, `error`, `page=1`, `size=10`, `keyword=xxx`
+- `/cron 日志 task_id [count]` shows recent execution entries (default 10, max 50)
+
 ## WebUI Config (Selected)
 
 - `admin_only_cron`: only admins can operate cron tasks
 - `admin_ids`: extra plugin-level admins (global AstrBot admins are also used)
 - `default_timezone`: default timezone
 - `default_retry_times`: default retry count
+- `execution_timeout_seconds`: timeout for single send attempt
+- `auto_disable_after_failures`: auto-disable threshold for consecutive failures (`0` to disable)
 - `session_task_limit`: task limit per session
 - `duplicate_check`: duplicate task detection switch
 

@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import tempfile
 import types
@@ -70,6 +71,7 @@ def _install_astrbot_stubs():
 
 
 _install_astrbot_stubs()
+import main
 from main import TschedulePlugin
 
 
@@ -120,6 +122,41 @@ class TestCollectSkillV210(unittest.TestCase):
                 plugin._local_store_path.parent,
                 Path(tmpdir) / "astrbot_plugin_tschedule",
             )
+
+    def test_parse_list_query(self):
+        opts = self.plugin._parse_list_query("启用 异常 页=2 每页=5 关键词=晨会")
+        self.assertEqual(opts["status"], "enabled")
+        self.assertTrue(opts["abnormal_only"])
+        self.assertEqual(opts["page"], 2)
+        self.assertEqual(opts["size"], 5)
+        self.assertEqual(opts["keyword"], "晨会")
+
+    def test_auto_disable_after_failures(self):
+        class Ctx:
+            def __init__(self):
+                self.data_path = None
+
+            def get_config(self):
+                return {}
+
+            async def send_message(self, umo, msg):
+                raise RuntimeError("send failed")
+
+        plugin = TschedulePlugin(Ctx(), config={"auto_disable_after_failures": 1})
+        task = main.CronTask(
+            task_id=1,
+            name="t",
+            reminder="r",
+            unified_msg_origin="u",
+            retry_times=0,
+            recent_logs=[],
+        )
+        ok = asyncio.run(
+            plugin._execute_task(task, plugin._now_in_timezone("Asia/Shanghai"), "cron")
+        )
+        self.assertFalse(ok)
+        self.assertFalse(task.enabled)
+        self.assertGreaterEqual(task.consecutive_failures, 1)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@
 - 统一 `/cron` 命令，支持周期任务与单次提醒
 - 支持任务创建、修改、删除、启用/禁用、立即执行、日志查询
 - 支持重试次数、重试策略、重试间隔
+- 支持执行超时与连续失败自动禁用（可配置）
 - 支持时区、错过触发策略（补执行/跳过）
 - 支持管理员控制、任务去重、单会话任务上限
 - 可同步到 AstrBot future task 列表
@@ -24,7 +25,8 @@
 - `/cron 添加 早报 | 0 9 * * * | 记得查看今日安排`
 - `/cron 单次 开会提醒 | 2026-04-05 09:30 | 10分钟后会议开始`
 - `/cron 列表`
-- `/cron 日志 1`
+- `/cron 列表 启用 异常 页=1 每页=10 关键词=晨会`
+- `/cron 日志 1 20`
 - `/cron 立即执行 1`
 
 ## 可选参数
@@ -37,12 +39,19 @@
 - `retry_strategy=fixed|exponential`：重试策略
 - `retry_interval=5`：重试间隔（秒）
 
+## 列表与日志增强
+
+- `/cron 列表` 支持筛选和分页：`启用|禁用`、`异常`、`页=1`、`每页=10`、`关键词=xxx`
+- `/cron 日志 任务ID [条数]` 支持查看最近 N 条执行记录（默认 10，最大 50）
+
 ## WebUI 配置（节选）
 
 - `admin_only_cron`：是否仅管理员可操作
 - `admin_ids`：插件附加管理员（默认也会读取 AstrBot 全局管理员）
 - `default_timezone`：默认时区
 - `default_retry_times`：默认重试次数
+- `execution_timeout_seconds`：单次执行超时秒数
+- `auto_disable_after_failures`：连续失败自动禁用阈值（0 表示关闭）
 - `session_task_limit`：单会话任务上限
 - `duplicate_check`：是否启用重复任务检测
 

@@ -44,10 +44,12 @@ class CronTask:
     last_check_at: str = ""
     last_error: str = ""
     last_run_at: str = ""
+    consecutive_failures: int = 0
+    recent_logs: list[str] = None
     future_job_id: str = ""
 
 
-@register("tschedule", "Tango", "Astrbot计划任务提醒（v2.1.1）", "2.1.1")
+@register("tschedule", "Tango", "Astrbot计划任务提醒（v2.1.2）", "2.1.2")
 class TschedulePlugin(Star):
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
@@ -309,16 +311,20 @@ class TschedulePlugin(Star):
             return await self._toggle_task(task_id, False)
 
         if normalized.startswith("日志 "):
-            task_id = self._safe_int(normalized.split(" ", 1)[1].strip(), "任务 ID")
-            return self._cron_task_log(task_id, event.unified_msg_origin)
+            payload = normalized.split(" ", 1)[1].strip()
+            task_id, limit = self._parse_log_query(payload)
+            return self._cron_task_log(task_id, event.unified_msg_origin, limit)
 
         if normalized.startswith("立即执行 "):
             self._ensure_admin(event)
             task_id = self._safe_int(normalized.split(" ", 1)[1].strip(), "任务 ID")
             return await self._cron_run_now(task_id, event)
 
-        if normalized in {"列表", "查看", "查看任务", "列出", "list", "ls"}:
-            return self._list_tasks(event.unified_msg_origin)
+        if normalized.startswith(("列表", "查看", "查看任务", "列出", "list", "ls")):
+            query = ""
+            if " " in normalized:
+                query = normalized.split(" ", 1)[1].strip()
+            return self._list_tasks(event.unified_msg_origin, query)
 
         if normalized in {"help", "帮助", "?", "-h", "--help"}:
             return self._cron_help_text()
@@ -334,8 +340,11 @@ class TschedulePlugin(Star):
             payload = normalized.split(" ", 1)[1].strip()
             return await self._create_task(payload, event, run_once=True)
 
-        if normalized in {"查看cron", "列出cron", "cron列表"}:
-            return self._list_tasks(event.unified_msg_origin)
+        if normalized.startswith(("查看cron", "列出cron", "cron列表")):
+            query = ""
+            if " " in normalized:
+                query = normalized.split(" ", 1)[1].strip()
+            return self._list_tasks(event.unified_msg_origin, query)
 
         return (
             "[E_CRON_UNKNOWN] 没有识别到可执行的 cron 指令。\n"
@@ -404,6 +413,8 @@ class TschedulePlugin(Star):
             retry_strategy=retry_strategy,
             retry_interval_seconds=retry_interval_seconds,
             missed_policy=missed_policy,
+            consecutive_failures=0,
+            recent_logs=[],
         )
 
         self.tasks[task.task_id] = task
@@ -578,13 +589,48 @@ class TschedulePlugin(Star):
         await self._save_state()
         return f"任务 #{task_id} 已{'启用' if enabled else '禁用'}。"
 
-    def _list_tasks(self, current_umo: str) -> str:
+    def _list_tasks(self, current_umo: str, query: str = "") -> str:
         items = [t for t in self.tasks.values() if t.unified_msg_origin == current_umo]
         if not items:
             return "当前会话还没有任务。"
 
-        lines = ["当前会话任务列表："]
-        for t in sorted(items, key=lambda x: x.task_id):
+        options = self._parse_list_query(query)
+
+        filtered = items
+        if options["status"] == "enabled":
+            filtered = [t for t in filtered if t.enabled]
+        elif options["status"] == "disabled":
+            filtered = [t for t in filtered if not t.enabled]
+        if options["abnormal_only"]:
+            filtered = [t for t in filtered if t.last_error]
+        if options["keyword"]:
+            kw = options["keyword"].lower()
+            filtered = [
+                t
+                for t in filtered
+                if kw in t.name.lower()
+                or kw in t.reminder.lower()
+                or kw in str(t.task_id)
+            ]
+
+        filtered = sorted(filtered, key=lambda x: x.task_id)
+        total = len(filtered)
+        if total == 0:
+            return "没有符合筛选条件的任务。"
+
+        page = options["page"]
+        size = options["size"]
+        start = (page - 1) * size
+        if start >= total:
+            page = max(1, (total + size - 1) // size)
+            start = (page - 1) * size
+        end = min(total, start + size)
+        page_items = filtered[start:end]
+
+        lines = [
+            f"当前会话任务列表（第 {page} 页，共 {max(1, (total + size - 1) // size)} 页，{total} 条）："
+        ]
+        for t in page_items:
             status = "启用" if t.enabled else "禁用"
             future_status = t.future_job_id if t.future_job_id else "未同步"
             kind = "单次" if t.run_once else "周期"
@@ -597,16 +643,19 @@ class TschedulePlugin(Star):
             )
             lines.append(
                 f"#{t.task_id} [{kind}/{status}] {t.name} | {schedule} | TZ:{t.timezone_name} | 下次:{next_run or '未知'} | "
-                f"重试:{t.retry_times}/{t.retry_interval_seconds}s/{t.retry_strategy} | 错过:{t.missed_policy} | {health} | future:{future_status}"
+                f"重试:{t.retry_times}/{t.retry_interval_seconds}s/{t.retry_strategy} | 连续失败:{t.consecutive_failures} | 错过:{t.missed_policy} | {health} | future:{future_status}"
             )
+        lines.append("筛选示例：`/cron 列表 启用 异常 页=1 每页=10 关键词=晨会`")
         return "\n".join(lines)
 
-    def _cron_task_log(self, task_id: int, current_umo: str) -> str:
+    def _cron_task_log(self, task_id: int, current_umo: str, limit: int = 10) -> str:
         task = self.tasks.get(task_id)
         if not task or task.unified_msg_origin != current_umo:
             raise ValueError(f"[E_NOT_FOUND] 任务 #{task_id} 不存在")
 
         schedule = task.run_at if task.run_once else task.cron_expr
+        logs = (task.recent_logs or [])[-limit:]
+        logs_text = "\n".join([f"- {x}" for x in reversed(logs)]) if logs else "- 无"
         return (
             f"任务 #{task.task_id} 日志\n"
             f"类型：{'单次' if task.run_once else '周期'}\n"
@@ -615,9 +664,11 @@ class TschedulePlugin(Star):
             f"时区：{task.timezone_name}\n"
             f"错过策略：{task.missed_policy}\n"
             f"重试：{task.retry_times} 次，间隔 {task.retry_interval_seconds}s，策略 {task.retry_strategy}\n"
+            f"连续失败：{task.consecutive_failures}\n"
             f"上次执行：{task.last_run_at or '无'}\n"
             f"上次错误：{task.last_error or '无'}\n"
-            f"future_job_id：{task.future_job_id or '无'}"
+            f"future_job_id：{task.future_job_id or '无'}\n"
+            f"最近 {limit} 条：\n{logs_text}"
         )
 
     async def _cron_run_now(self, task_id: int, event: AstrMessageEvent) -> str:
@@ -665,6 +716,10 @@ class TschedulePlugin(Star):
                                     "%Y-%m-%d %H:%M:%S"
                                 )
                                 task.last_error = f"跳过执行：错过触发时间约 {missed_seconds // 60} 分钟"
+                                self._append_task_log(
+                                    task,
+                                    f"{task.last_run_at} [once] 跳过：错过触发约 {missed_seconds // 60} 分钟",
+                                )
                                 task.last_run_minute = now_minute_key
                                 to_delete.append(task.task_id)
                                 changed = True
@@ -724,19 +779,51 @@ class TschedulePlugin(Star):
             text += f"(cron: {task.cron_expr})"
 
         max_attempts = 1 + max(0, int(task.retry_times))
+        timeout_seconds = self._execution_timeout_seconds()
         last_err = ""
         for attempt in range(1, max_attempts + 1):
             try:
-                await self._send_text(task.unified_msg_origin, text)
+                await asyncio.wait_for(
+                    self._send_text(task.unified_msg_origin, text),
+                    timeout=timeout_seconds,
+                )
                 task.last_error = ""
                 task.last_run_at = now.strftime("%Y-%m-%d %H:%M:%S")
+                task.consecutive_failures = 0
+                self._append_task_log(
+                    task,
+                    f"{task.last_run_at} [{reason}] 成功（attempt {attempt}/{max_attempts}）",
+                )
                 return True
+            except asyncio.TimeoutError:
+                last_err = f"执行超时（>{timeout_seconds}s）"
+                self._append_task_log(
+                    task,
+                    f"{now.strftime('%Y-%m-%d %H:%M:%S')} [{reason}] 超时（attempt {attempt}/{max_attempts}）",
+                )
             except Exception as e:
                 last_err = str(e)
+                self._append_task_log(
+                    task,
+                    f"{now.strftime('%Y-%m-%d %H:%M:%S')} [{reason}] 失败（attempt {attempt}/{max_attempts}）：{last_err[:80]}",
+                )
                 if attempt < max_attempts:
                     await asyncio.sleep(self._retry_wait_seconds(task, attempt))
 
         task.last_error = f"{reason}失败: {last_err[:120]}"
+        task.consecutive_failures += 1
+        threshold = self._auto_disable_after_failures()
+        if threshold > 0 and task.consecutive_failures >= threshold:
+            task.enabled = False
+            task.last_error = f"{task.last_error}; 已连续失败 {task.consecutive_failures} 次，任务已自动禁用"
+            try:
+                await self._sync_task_to_future_list(task)
+            except Exception:
+                pass
+        self._append_task_log(
+            task,
+            f"{now.strftime('%Y-%m-%d %H:%M:%S')} [{reason}] 最终失败：{task.last_error[:120]}",
+        )
         return False
 
     # ---------- future task sync ----------
@@ -988,6 +1075,72 @@ class TschedulePlugin(Star):
         normalized = payload.replace("｜", "|")
         return [p.strip() for p in normalized.split("|")]
 
+    def _parse_list_query(self, query: str) -> dict:
+        options = {
+            "status": "all",  # all | enabled | disabled
+            "abnormal_only": False,
+            "keyword": "",
+            "page": 1,
+            "size": 20,
+        }
+        text = (query or "").strip()
+        if not text:
+            return options
+
+        for token in re.split(r"\s+", text):
+            t = token.strip()
+            if not t:
+                continue
+
+            low = t.lower()
+            if low in {"启用", "enabled", "on"}:
+                options["status"] = "enabled"
+                continue
+            if low in {"禁用", "disabled", "off"}:
+                options["status"] = "disabled"
+                continue
+            if low in {"异常", "error", "failed"}:
+                options["abnormal_only"] = True
+                continue
+
+            if "=" in t:
+                key, val = t.split("=", 1)
+            elif "：" in t:
+                key, val = t.split("：", 1)
+            elif ":" in t:
+                key, val = t.split(":", 1)
+            else:
+                key, val = "", t
+
+            key = key.strip().lower()
+            val = val.strip()
+
+            if key in {"页", "page", "p"}:
+                options["page"] = max(1, self._safe_int(val, "页码"))
+                continue
+            if key in {"每页", "size", "limit"}:
+                options["size"] = min(100, max(1, self._safe_int(val, "每页数量")))
+                continue
+            if key in {"关键词", "keyword", "kw"}:
+                options["keyword"] = val
+                continue
+
+            if not key and not options["keyword"]:
+                options["keyword"] = val
+
+        return options
+
+    def _parse_log_query(self, payload: str) -> tuple[int, int]:
+        parts = [x.strip() for x in payload.split(" ") if x.strip()]
+        if not parts:
+            raise ValueError("[E_PARAM] 日志格式应为：/cron 日志 任务ID [条数]")
+        task_id = self._safe_int(parts[0], "任务 ID")
+        limit = 10
+        if len(parts) >= 2:
+            limit = self._safe_int(parts[1], "日志条数")
+        limit = min(50, max(1, limit))
+        return task_id, limit
+
     def _actor_id(self, event: AstrMessageEvent) -> str:
         for key in ("sender_id", "user_id", "userId", "uid"):
             value = getattr(event, key, None)
@@ -1204,6 +1357,22 @@ class TschedulePlugin(Star):
             v = 180
         return min(1440, max(10, v))
 
+    def _execution_timeout_seconds(self) -> int:
+        v = self._config_get("execution_timeout_seconds", 30)
+        try:
+            v = int(v)
+        except Exception:
+            v = 30
+        return min(600, max(1, v))
+
+    def _auto_disable_after_failures(self) -> int:
+        v = self._config_get("auto_disable_after_failures", 0)
+        try:
+            v = int(v)
+        except Exception:
+            v = 0
+        return max(0, v)
+
     def _normalize_missed_policy(self, raw: Any) -> str:
         value = str(raw or "").strip().lower()
         if value in {"catch_up", "catchup", "补执行", "补跑", "补偿"}:
@@ -1391,6 +1560,13 @@ class TschedulePlugin(Star):
             return ""
         return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
 
+    def _append_task_log(self, task: CronTask, line: str):
+        if task.recent_logs is None:
+            task.recent_logs = []
+        task.recent_logs.append(line)
+        if len(task.recent_logs) > 50:
+            task.recent_logs = task.recent_logs[-50:]
+
     def _retry_wait_seconds(self, task: CronTask, attempt: int) -> int:
         base = max(1, int(task.retry_interval_seconds))
         if task.retry_strategy == "exponential":
@@ -1440,7 +1616,7 @@ class TschedulePlugin(Star):
 
     def _cron_help_text(self) -> str:
         return (
-            "cron 管理（v2.1.0）\n"
+            "cron 管理（v2.1.2）\n"
             "1) /cron 添加 任务名 | */5 * * * * | 提醒内容 | 可选重试次数 | 可选参数\n"
             "2) /cron 单次 任务名 | 2026-04-05 09:30 | 提醒内容 | 可选重试次数 | 可选参数\n"
             "   说明：原 todo 已并入单次提醒\n"
@@ -1449,11 +1625,12 @@ class TschedulePlugin(Star):
             "5) /cron 删除 任务ID\n"
             "6) /cron 启用 任务ID\n"
             "7) /cron 禁用 任务ID\n"
-            "8) /cron 列表\n"
-            "9) /cron 日志 任务ID\n"
+            "8) /cron 列表 [启用|禁用] [异常] [页=1] [每页=10] [关键词=xxx]\n"
+            "9) /cron 日志 任务ID [条数]\n"
             "10) /cron 立即执行 任务ID\n"
             "\n"
             "可选参数示例：tz=Asia/Shanghai | miss=catch_up(或skip) | retry_strategy=fixed(或exponential) | retry_interval=5\n"
+            "执行安全：支持 execution_timeout_seconds；可配置 auto_disable_after_failures 自动禁用连续失败任务。\n"
             "创建后会回显“下次触发时间预览”。\n"
             "\n"
             "自然语言识别已交给主助手，请由助手调用工具：\n"
@@ -1551,8 +1728,15 @@ class TschedulePlugin(Star):
                     last_check_at=str(item.get("last_check_at", "")),
                     last_error=str(item.get("last_error", "")),
                     last_run_at=str(item.get("last_run_at", "")),
+                    consecutive_failures=max(
+                        0, int(item.get("consecutive_failures", 0))
+                    ),
+                    recent_logs=item.get("recent_logs", []),
                     future_job_id=str(item.get("future_job_id", "")),
                 )
+                if not isinstance(task.recent_logs, list):
+                    task.recent_logs = []
+                task.recent_logs = [str(x) for x in task.recent_logs][-50:]
                 try:
                     task.retry_strategy = self._normalize_retry_strategy(
                         task.retry_strategy

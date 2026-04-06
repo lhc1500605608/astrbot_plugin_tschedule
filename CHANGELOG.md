@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## v2.1.2 - 2026-04-06
+
+### Added
+- Added execution timeout control (`execution_timeout_seconds`) to prevent hung send calls.
+- Added consecutive failure counter and optional auto-disable policy (`auto_disable_after_failures`).
+- Added recent execution log buffer per task, with `/cron 日志 任务ID [条数]` support.
+- Added `/cron 列表` filter & pagination options (`启用/禁用/异常/页/每页/关键词`).
+
+### Changed
+- Improved task list output with consecutive failure count.
+- Updated metadata and README/README_EN for new command and config options.
+
+### Compatibility
+- Existing data remains compatible; new fields are auto-filled with safe defaults.
+
 ## v2.1.1 - 2026-04-04
 
 ### Changed
