@@ -52,6 +52,7 @@ You can append optional parameters when creating/updating tasks:
 - `default_retry_times`: default retry count
 - `execution_timeout_seconds`: timeout for single send attempt
 - `auto_disable_after_failures`: auto-disable threshold for consecutive failures (`0` to disable)
+- `future_execution_mode`: execution mode (`local_fallback` recommended, `platform` for full platform ownership)
 - `session_task_limit`: task limit per session
 - `duplicate_check`: duplicate task detection switch
 

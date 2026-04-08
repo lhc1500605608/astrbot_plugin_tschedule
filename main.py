@@ -697,8 +697,12 @@ class TschedulePlugin(Star):
                     if not task.enabled:
                         continue
 
-                    # 已同步到 AstrBot Future Task，由平台侧调度，避免双重提醒。
-                    if task.future_job_id and self._get_cron_manager() is not None:
+                    # 可配置 future 执行权归属。默认 local_fallback：同步 future 列表，但本地仍保留触发兜底。
+                    if (
+                        task.future_job_id
+                        and self._get_cron_manager() is not None
+                        and self._future_execution_mode() == "platform"
+                    ):
                         continue
 
                     task_now = self._now_in_timezone(task.timezone_name)
@@ -1357,6 +1361,21 @@ class TschedulePlugin(Star):
             v = 180
         return min(1440, max(10, v))
 
+    def _future_execution_mode(self) -> str:
+        """
+        future 任务执行模式：
+        - platform: 完全由 AstrBot future manager 触发
+        - local_fallback: 仍同步到 future 列表，但由本地调度兜底（默认）
+        """
+        mode = (
+            str(self._config_get("future_execution_mode", "local_fallback"))
+            .strip()
+            .lower()
+        )
+        if mode not in {"platform", "local_fallback"}:
+            mode = "local_fallback"
+        return mode
+
     def _execution_timeout_seconds(self) -> int:
         v = self._config_get("execution_timeout_seconds", 30)
         try:
@@ -1631,6 +1650,7 @@ class TschedulePlugin(Star):
             "\n"
             "可选参数示例：tz=Asia/Shanghai | miss=catch_up(或skip) | retry_strategy=fixed(或exponential) | retry_interval=5\n"
             "执行安全：支持 execution_timeout_seconds；可配置 auto_disable_after_failures 自动禁用连续失败任务。\n"
+            "future 执行：future_execution_mode 默认 local_fallback（建议），可改为 platform。\n"
             "创建后会回显“下次触发时间预览”。\n"
             "\n"
             "自然语言识别已交给主助手，请由助手调用工具：\n"

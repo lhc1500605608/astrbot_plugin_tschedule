@@ -52,6 +52,7 @@
 - `default_retry_times`：默认重试次数
 - `execution_timeout_seconds`：单次执行超时秒数
 - `auto_disable_after_failures`：连续失败自动禁用阈值（0 表示关闭）
+- `future_execution_mode`：future 执行模式（`local_fallback` 推荐，`platform` 为平台全托管）
 - `session_task_limit`：单会话任务上限
 - `duplicate_check`：是否启用重复任务检测
 

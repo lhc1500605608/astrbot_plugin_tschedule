@@ -61,5 +61,10 @@
     "type": "int",
     "description": "连续失败达到阈值后自动禁用任务（0 表示关闭）",
     "default": 0
+  },
+  "future_execution_mode": {
+    "type": "string",
+    "description": "future 执行模式：platform 或 local_fallback（默认）",
+    "default": "local_fallback"
   }
 }
