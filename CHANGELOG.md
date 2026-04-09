@@ -10,10 +10,12 @@ All notable changes to this project will be documented in this file.
 - Added recent execution log buffer per task, with `/cron 日志 任务ID [条数]` support.
 - Added `/cron 列表` filter & pagination options (`启用/禁用/异常/页/每页/关键词`).
 - Added `future_execution_mode` to control scheduler ownership (`local_fallback` / `platform`).
+- Added assistant proxy tools for cross-session Future task management: `list_future_tasks_proxy` and `delete_future_task_proxy`.
 
 ### Changed
 - Improved task list output with consecutive failure count.
 - Updated metadata and README/README_EN for new command and config options.
+- In `platform` mode, run-once tasks now attempt automatic local cleanup after execution.
 
 ### Compatibility
 - Existing data remains compatible; new fields are auto-filled with safe defaults.

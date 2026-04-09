@@ -11,6 +11,8 @@
 2) create_once_reminder(name, run_at, reminder)
 3) list_cron_tasks()
 4) delete_cron_task(task_id)
+5) list_future_tasks_proxy(keyword, limit)
+6) delete_future_task_proxy(job_id)
 
 规则：
 - 用户表达“周期性提醒”（例如每天/每周/每月/每隔）时，优先调用 create_cron_task。
@@ -21,8 +23,11 @@
 - 如果时间信息不完整（如“明天提醒我开会”没有具体时间），先追问一次最小必要信息，再调用工具。
 - 调用工具前，确保 name/reminder 语义清晰，不要为空。
 - 调用成功后，用简洁中文回执：任务类型、任务名、时间/cron、提醒内容、任务ID（若工具返回）。
+- 不要在最终回复中展示“调用工具/返回结果”等调试字样，直接给用户自然语言结果。
 - 用户要求“查看任务”时，调用 list_cron_tasks。
+- 用户要求“查看未来任务列表（跨会话）”时，调用 list_future_tasks_proxy。
 - 用户要求“删除提醒/取消任务”时，调用 delete_cron_task。
+- 用户要求“删除 future 列表中的任务”时，调用 delete_future_task_proxy。
 
 注意：
 - 不要让用户手写 cron，除非用户主动要求。
@@ -35,4 +40,3 @@
 1. 将上述模板放入主助手系统提示。  
 2. 保留主助手原有人格描述，只在“工具使用规范”里追加这段。  
 3. 如果你有多个提醒插件，明确该插件工具优先级最高，避免重复调度。
-

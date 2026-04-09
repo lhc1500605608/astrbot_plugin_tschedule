@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -201,9 +202,47 @@ class TschedulePlugin(Star):
         return await self._create_task(payload, event, run_once=True)
 
     @filter.llm_tool(name="list_cron_tasks")
-    async def llm_list_cron_tasks(self, event: AstrMessageEvent) -> str:
-        """列出当前会话的 cron 任务。"""
-        return self._list_tasks(event.unified_msg_origin)
+    async def llm_list_cron_tasks(
+        self,
+        event: AstrMessageEvent,
+        scope: str = "current",
+        keyword: str = "",
+        limit: int = 50,
+    ) -> str:
+        """列出 cron 任务。
+
+        Args:
+            scope(string): current 或 all。all 仅管理员可用。
+            keyword(string): 关键词过滤（任务名/提醒内容）。
+            limit(int): 返回条数上限（1-200）。
+        """
+        sc = str(scope or "current").strip().lower()
+        kw = str(keyword or "").strip().lower()
+        lim = min(200, max(1, int(limit)))
+
+        if sc != "all":
+            return self._list_tasks(
+                event.unified_msg_origin, f"每页={lim} 关键词={keyword}"
+            )
+
+        self._ensure_admin(event)
+        items = sorted(self.tasks.values(), key=lambda x: x.task_id)
+        lines = ["全部会话 cron 任务："]
+        count = 0
+        for t in items:
+            if kw and kw not in t.name.lower() and kw not in t.reminder.lower():
+                continue
+            schedule = t.run_at if t.run_once else t.cron_expr
+            lines.append(
+                f"#{t.task_id} [{'单次' if t.run_once else '周期'}/{'启用' if t.enabled else '禁用'}] "
+                f"{t.name} | {schedule} | 会话:{t.unified_msg_origin}"
+            )
+            count += 1
+            if count >= lim:
+                break
+        if count == 0:
+            return "没有匹配的任务。"
+        return "\n".join(lines)
 
     @filter.llm_tool(name="delete_cron_task")
     async def llm_delete_cron_task(self, event: AstrMessageEvent, task_id: str) -> str:
@@ -215,6 +254,68 @@ class TschedulePlugin(Star):
         self._ensure_admin(event)
         tid = self._safe_int(task_id, "任务 ID")
         return await self._delete_task(tid)
+
+    @filter.llm_tool(name="list_future_tasks_proxy")
+    async def llm_list_future_tasks_proxy(
+        self, event: AstrMessageEvent, keyword: str = "", limit: int = 30
+    ) -> str:
+        """列出 AstrBot future task 列表（跨会话）。
+
+        Args:
+            keyword(string): 可选关键词过滤。
+            limit(int): 返回条数上限，1-100。
+        """
+        self._ensure_admin(event)
+        jobs = await self._list_future_jobs()
+        kw = str(keyword or "").strip().lower()
+        lim = min(100, max(1, int(limit)))
+
+        lines = ["Future 任务列表："]
+        count = 0
+        for job in jobs:
+            data = self._job_to_dict(job)
+            name = str(data.get("name") or data.get("title") or "").strip()
+            desc = str(data.get("description") or data.get("note") or "").strip()
+            session = str(
+                data.get("session") or data.get("unified_msg_origin") or ""
+            ).strip()
+            job_id = str(data.get("job_id") or data.get("id") or "").strip()
+            enabled = data.get("enabled")
+            if (
+                kw
+                and kw not in name.lower()
+                and kw not in desc.lower()
+                and kw not in session.lower()
+            ):
+                continue
+            lines.append(
+                f"- {job_id or 'unknown'} | {name or '(无标题)'} | {'启用' if enabled is not False else '禁用'} | {session or '(未知会话)'}"
+            )
+            count += 1
+            if count >= lim:
+                break
+        if count == 0:
+            return "没有匹配的 Future 任务。"
+        return "\n".join(lines)
+
+    @filter.llm_tool(name="delete_future_task_proxy")
+    async def llm_delete_future_task_proxy(
+        self, event: AstrMessageEvent, job_id: str
+    ) -> str:
+        """删除 AstrBot future task。
+
+        Args:
+            job_id(string): future job ID。
+        """
+        self._ensure_admin(event)
+        jid = str(job_id or "").strip()
+        if not jid:
+            raise ValueError("[E_PARAM] job_id 不能为空")
+        cron_mgr = self._get_cron_manager()
+        if cron_mgr is None or not hasattr(cron_mgr, "delete_job"):
+            raise ValueError("[E_UNAVAILABLE] 当前环境不支持删除 Future 任务")
+        await self._await_if_needed(cron_mgr.delete_job(jid))
+        return f"Future 任务已删除：{jid}"
 
     # ---------- 命令入口 ----------
     @filter.command("cron", alias={"定时", "cron任务", "提醒"}, priority=999)
@@ -430,30 +531,12 @@ class TschedulePlugin(Star):
                 self._next_cron_time(task.cron_expr, task.timezone_name)
             )
         )
-        preview_text = preview or "无法计算（请检查 cron 表达式）"
+        preview_text = preview or "时间待确认"
 
         if run_once:
-            return (
-                f"已创建单次提醒任务 #{task.task_id}\n"
-                f"名称：{task.name}\n"
-                f"执行时间：{task.run_at}\n"
-                f"提醒：{task.reminder}\n"
-                f"时区：{task.timezone_name}\n"
-                f"错过策略：{task.missed_policy}\n"
-                f"重试：{task.retry_times} 次，间隔 {task.retry_interval_seconds}s，策略 {task.retry_strategy}\n"
-                f"下次触发：{preview_text}"
-            )
+            return f"提醒已设置 #{task.task_id}（单次，时间：{preview_text}）"
 
-        return (
-            f"已创建 cron 任务 #{task.task_id}\n"
-            f"名称：{task.name}\n"
-            f"表达式：{task.cron_expr}\n"
-            f"提醒：{task.reminder}\n"
-            f"时区：{task.timezone_name}\n"
-            f"错过策略：{task.missed_policy}\n"
-            f"重试：{task.retry_times} 次，间隔 {task.retry_interval_seconds}s，策略 {task.retry_strategy}\n"
-            f"下次触发：{preview_text}"
-        )
+        return f"提醒已设置 #{task.task_id}（循环）"
 
     async def _update_task(self, payload: str) -> str:
         parts = self._split_payload(payload)
@@ -703,6 +786,10 @@ class TschedulePlugin(Star):
                         and self._get_cron_manager() is not None
                         and self._future_execution_mode() == "platform"
                     ):
+                        # 平台托管模式下，尝试清理已完成的单次任务，避免留存“已执行但未删除”。
+                        if await self._maybe_cleanup_platform_once_task(task):
+                            to_delete.append(task.task_id)
+                            changed = True
                         continue
 
                     task_now = self._now_in_timezone(task.timezone_name)
@@ -776,11 +863,7 @@ class TschedulePlugin(Star):
             await asyncio.sleep(20)
 
     async def _execute_task(self, task: CronTask, now: datetime, reason: str) -> bool:
-        text = f"[提醒 #{task.task_id}] {task.name}\n{task.reminder}\n"
-        if task.run_once:
-            text += f"(单次: {task.run_at})"
-        else:
-            text += f"(cron: {task.cron_expr})"
+        text = f"提醒 #{task.task_id}：{task.name}\n{task.reminder}"
 
         max_attempts = 1 + max(0, int(task.retry_times))
         timeout_seconds = self._execution_timeout_seconds()
@@ -848,6 +931,113 @@ class TschedulePlugin(Star):
             "plugin_task_id": task.task_id,
             "run_at": task.run_at if task.run_once else None,
         }
+
+    async def _await_if_needed(self, value):
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    def _job_to_dict(self, job: Any) -> dict:
+        if isinstance(job, dict):
+            return job
+        result = {}
+        for key in (
+            "job_id",
+            "id",
+            "name",
+            "title",
+            "description",
+            "note",
+            "enabled",
+            "session",
+            "unified_msg_origin",
+            "payload",
+            "run_once",
+            "run_at",
+            "cron_expression",
+        ):
+            if hasattr(job, key):
+                result[key] = getattr(job, key)
+        payload = result.get("payload")
+        if isinstance(payload, dict):
+            if "session" not in result and payload.get("session"):
+                result["session"] = payload.get("session")
+            if "note" not in result and payload.get("note"):
+                result["note"] = payload.get("note")
+        return result
+
+    async def _list_future_jobs(self) -> list:
+        cron_mgr = self._get_cron_manager()
+        if cron_mgr is None:
+            return []
+
+        for method_name in (
+            "list_jobs",
+            "get_jobs",
+            "list_active_jobs",
+            "get_active_jobs",
+        ):
+            method = getattr(cron_mgr, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                res = await self._await_if_needed(method())
+                if res is None:
+                    continue
+                if isinstance(res, dict):
+                    return list(res.values())
+                return list(res)
+            except Exception:
+                continue
+        return []
+
+    async def _future_job_exists(self, job_id: str) -> Optional[bool]:
+        cron_mgr = self._get_cron_manager()
+        if cron_mgr is None:
+            return None
+        jid = str(job_id or "").strip()
+        if not jid:
+            return None
+
+        for method_name in ("get_job", "find_job"):
+            method = getattr(cron_mgr, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                obj = await self._await_if_needed(method(jid))
+                return obj is not None
+            except Exception:
+                continue
+
+        jobs = await self._list_future_jobs()
+        if not jobs:
+            return None
+        for job in jobs:
+            data = self._job_to_dict(job)
+            if str(data.get("job_id") or data.get("id") or "").strip() == jid:
+                return True
+        return False
+
+    async def _maybe_cleanup_platform_once_task(self, task: CronTask) -> bool:
+        if not task.run_once or not task.future_job_id:
+            return False
+        try:
+            now = self._now_in_timezone(task.timezone_name)
+            run_at_dt = self._parse_run_at(task.run_at, task.timezone_name)
+        except Exception:
+            return False
+
+        if now < run_at_dt:
+            return False
+
+        exists = await self._future_job_exists(task.future_job_id)
+        if exists is False:
+            self._append_task_log(
+                task,
+                f"{now.strftime('%Y-%m-%d %H:%M:%S')} [platform] 单次任务已完成，自动清理本地记录",
+            )
+            return True
+        return False
 
     async def _sync_task_to_future_list(self, task: CronTask):
         cron_mgr = self._get_cron_manager()

@@ -209,3 +209,6 @@ __marimo__/
 # Local workspace files
 astrbot_plugin_tschedule.code-workspace
 astrbot_plugin_collect_skill.code-workspace
+
+# macOS Finder metadata
+.DS_Store

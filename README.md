@@ -53,6 +53,15 @@
 - `execution_timeout_seconds`：单次执行超时秒数
 - `auto_disable_after_failures`：连续失败自动禁用阈值（0 表示关闭）
 - `future_execution_mode`：future 执行模式（`local_fallback` 推荐，`platform` 为平台全托管）
+
+## Future 列表管理（助手工具）
+
+为避免与核心 `list_future_tasks` 的无参调用冲突，本插件提供了代理工具给助手调用：
+
+- `list_future_tasks_proxy(keyword, limit)`：跨会话查看 Future 任务
+- `delete_future_task_proxy(job_id)`：删除指定 Future 任务
+
+说明：以上工具默认仅管理员可用。
 - `session_task_limit`：单会话任务上限
 - `duplicate_check`：是否启用重复任务检测
 

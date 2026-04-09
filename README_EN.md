@@ -53,6 +53,15 @@ You can append optional parameters when creating/updating tasks:
 - `execution_timeout_seconds`: timeout for single send attempt
 - `auto_disable_after_failures`: auto-disable threshold for consecutive failures (`0` to disable)
 - `future_execution_mode`: execution mode (`local_fallback` recommended, `platform` for full platform ownership)
+
+## Future Task Management (Assistant Tools)
+
+To avoid no-arg conflicts with core `list_future_tasks`, this plugin provides proxy tools:
+
+- `list_future_tasks_proxy(keyword, limit)`: list Future tasks across sessions
+- `delete_future_task_proxy(job_id)`: delete a specific Future task
+
+Note: these tools are admin-only by default.
 - `session_task_limit`: task limit per session
 - `duplicate_check`: duplicate task detection switch
 
