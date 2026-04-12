@@ -1,6 +1,6 @@
 name: astrbot_plugin_tschedule
 display_name: "Astrbot计划任务提醒"
 desc: AstrBot 计划任务提醒插件，支持执行超时、自动禁用、列表筛选与日志增强。
-version: v2.1.2
+version: v2.1.3
 author: Tango
 repo: https://github.com/lhc1500605608/astrbot_plugin_tschedule

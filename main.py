@@ -50,7 +50,7 @@ class CronTask:
     future_job_id: str = ""
 
 
-@register("tschedule", "Tango", "Astrbot计划任务提醒（v2.1.2）", "2.1.2")
+@register("tschedule", "Tango", "Astrbot计划任务提醒（v2.1.3）", "2.1.3")
 class TschedulePlugin(Star):
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
@@ -863,7 +863,9 @@ class TschedulePlugin(Star):
             await asyncio.sleep(20)
 
     async def _execute_task(self, task: CronTask, now: datetime, reason: str) -> bool:
-        text = f"提醒 #{task.task_id}：{task.name}\n{task.reminder}"
+        # ASTRBOT_NO_MEMORY 是跨插件协议标记，通知 tmemory 等记忆插件跳过此消息的采集。
+        _ASTRBOT_NO_MEMORY = "\x00[astrbot:no-memory]\x00"
+        text = f"{_ASTRBOT_NO_MEMORY}提醒 #{task.task_id}：{task.name}\n{task.reminder}"
 
         max_attempts = 1 + max(0, int(task.retry_times))
         timeout_seconds = self._execution_timeout_seconds()
